@@ -133,16 +133,32 @@ handle_info(write_loop, State) ->
 
 %callback helpers
 
+all_changes_are_acknowledged(ReaderChanges) ->
+    lists:all(fun
+            (#change_for_reader{status = acknowledged}) -> true;
+            (_) -> false
+        end,
+        ReaderChanges).
+
+
 send_heartbeat_to_readers(_, _, []) ->
     ok;
 send_heartbeat_to_readers(GuidPrefix,
                           HB,
-                          [#reader_proxy{guid = ReaderGUID, unicastLocatorList = [L | _]} | TL]) ->
-    [G | _] = pg:get_members(rtps_gateway),
-    SUB_MSG_LIST = [rtps_messages:serialize_heatbeat(HB#heartbeat{readerGUID = ReaderGUID})],
-    Datagram = rtps_messages:build_message(GuidPrefix, SUB_MSG_LIST),
-    rtps_gateway:send(G, {Datagram, {L#locator.ip, L#locator.port}}),
-    send_heartbeat_to_readers(GuidPrefix, HB, TL).
+                          [#reader_proxy{guid = ReaderGUID,
+                                         changes_for_reader = C4R,
+                                         unicastLocatorList = [L | _]} | TL]) ->
+    case all_changes_are_acknowledged(C4R) of
+        true ->
+            send_heartbeat_to_readers(GuidPrefix, HB, TL);
+        false ->
+            [G | _] = pg:get_members(rtps_gateway),
+            NewHB = HB#heartbeat{readerGUID = ReaderGUID},
+            SUB_MSG_LIST = [rtps_messages:serialize_heatbeat(NewHB)],
+            Datagram = rtps_messages:build_message(GuidPrefix, SUB_MSG_LIST),
+            rtps_gateway:send(G, {Datagram, {L#locator.ip, L#locator.port}}),
+            send_heartbeat_to_readers(GuidPrefix, HB, TL)
+    end.
 
 build_heartbeat(GUID, Cache, Count) ->
     MinSN = rtps_history_cache:get_min_seq_num(Cache),
@@ -285,7 +301,7 @@ reset_reader_proxies(Changes, [RP | TL], NewProxies) ->
     N_RP = RP#reader_proxy{changes_for_reader = ChangesForReaders},
     reset_reader_proxies(Changes, TL, [N_RP | NewProxies]).
 
-is_acked_by_reader(ChangeKey,#reader_proxy{changes_for_reader=Changes}) -> 
+is_acked_by_reader(ChangeKey,#reader_proxy{changes_for_reader=Changes}) ->
     %[ io:format("~p with key = ~p\n",[S,Key]) || #change_for_reader{change_key=Key, status = S}=C <- Changes],
     length([ C || #change_for_reader{change_key=Key, status = S}=C <- Changes, (ChangeKey==Key) and (S == acknowledged)]) >= 1.
 
