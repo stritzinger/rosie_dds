@@ -10,12 +10,13 @@
     parse_rtps_header/1,
     parse_submsg_header/1,
     parse_data/2,
+    parse_data_frag/2,
     parse_heartbeat/2,
-    parse_acknack/2, 
-    parse_gap/2, 
-    parse_param_list/1, 
+    parse_acknack/2,
+    parse_gap/2,
+    parse_param_list/1,
     serialize_data/2,
-    serialize_heatbeat/1, 
+    serialize_heatbeat/1,
     serialize_acknack/1
 ]).
 
@@ -514,6 +515,36 @@ parse_data(F, _) ->
     debug_data_flags(F),
     unsopported.
 
+parse_data_frag(<<_:3, 0:1, 0:1, 0:1, 0:1, 1:1>>,% expected just little-endian
+           <<_:16/bitstring,%extra flags not used
+             _:16/little,% OctetsToInlineQos not used for now
+             ReaderID:24,
+             ReaderKind:8,
+             WriterID:24,
+             WriterKind:8,
+             _:32,% usually is all 0
+             WriterSN:32/little-signed-integer,
+             FragmentStartingNum:32/little,
+             FragmentsInSubmessage:16/little-integer,
+             FragmentSize:16/little-integer,
+             SampleSize:32/little-integer,
+             Fragments/binary>>) ->
+    % TODO;
+    % assert fragments size and split them
+    {#entityId{key = <<ReaderID:24>>, kind = ReaderKind},
+     #entityId{key = <<WriterID:24>>, kind = WriterKind},
+     WriterSN,
+     #data_frag{
+        start_num = FragmentStartingNum,
+        count = FragmentsInSubmessage,
+        fragment_size = FragmentSize,
+        sample_size = SampleSize,
+        fragments = Fragments
+     }};
+parse_data_frag(F, _) ->
+    debug_data_flags(F),
+    unsopported.
+
 % parameter parsing to records
 param_to_record(?PID_STATUS_INFO, <<V:32/big>>) ->
     {status_info, V};
@@ -627,7 +658,7 @@ parse_gap(<<_:7, 1:1>>,
             <<ReaderID:3/binary,
                 ReaderKind:8,
                 WriterID:3/binary,
-                WriterKind:8,                
+                WriterKind:8,
                 _:32,
                 GapStart:32/little,
                 _:32,
@@ -642,7 +673,7 @@ parse_gap(<<_:7, 1:1>>,
             <<ReaderID:3/binary,
                 ReaderKind:8,
                 WriterID:3/binary,
-                WriterKind:8,                
+                WriterKind:8,
                 _:32,
                 GapStart:32/little,
                 _:32,
@@ -654,7 +685,7 @@ parse_gap(<<_:7, 1:1>>,
     #gap{
         writerGUID = #guId{entityId = #entityId{key = WriterID, kind = WriterKind}},
         readerGUID = #guId{entityId = #entityId{key = ReaderID, kind = ReaderKind}},
-        sn_set = lists:seq(GapStart, BitMapBase-1) ++ filter_by_bits(BitMapBase, 
+        sn_set = lists:seq(GapStart, BitMapBase-1) ++ filter_by_bits(BitMapBase,
                                 NumSet,
                                 BITMAP_LENGTH,
                                 lists:seq(BitMapBase, BitMapBase + NumBits))
