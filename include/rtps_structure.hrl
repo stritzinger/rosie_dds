@@ -18,7 +18,15 @@
          requested_changes = [],
          unsent_changes = [],
          expectsInlineQos = false}).
+
 -record(change_for_reader, {change_key, status, is_relevant = true}).
+% change_for_reader status can be:
+% UNSENT, UNACKNOWLEDGED, REQUESTED, ACKNOWLEDGED, UNDERWAY
+
+-record(change_from_writer, {change_key, status=unknown, is_relevant = true}).
+% change_from_writer status can be:
+% LOST, MISSING, RECEIVED, UNKNOWN
+
 -record(data_frag, {
         start_num       :: integer(),
         count           :: integer(),
@@ -26,15 +34,6 @@
         sample_size     :: integer(),
         fragments       :: binary()
 }).
-
-% status can be:
-% UNSENT, UNACKNOWLEDGED, REQUESTED, ACKNOWLEDGED, UNDERWAY
-
--record(change_from_writer, {change_key, status=unknown, is_relevant = true}).
-
-% status can be:
-% LOST, MISSING, RECEIVED, UNKNOWN
-
 -record(gap,
         {writerGUID = #guId{},
          readerGUID = #guId{},
