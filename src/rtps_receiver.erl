@@ -106,14 +106,14 @@ analize(GuidPrefix, Packet, {Ip, Port}) ->
                timestamp = ?TIME_INVALID},
 
     % Do not interpret possible loopback messages:
-    % NOTE: 
+    % NOTE:
     % This forbids communications between endpoints in the same dds participant (Virtual Machine)
     % Communication inside one participant should be possible but should never rely on loopback UDP datagrams
-    case GuidPrefix /= SourceGuidPrefix of
-        true ->
-            sub_msg_parsing_loop(State, PayLoad);
-        false ->
-            ok
+    case SourceGuidPrefix of
+        GuidPrefix ->
+            skip;
+        _ ->
+            sub_msg_parsing_loop(State, PayLoad)
     end.
 
 sub_msg_parsing_loop(_, <<>>) ->
@@ -123,12 +123,14 @@ sub_msg_parsing_loop(State, PayLoad) ->
     <<Body:Length/binary, NextSubMsg/binary>> = Tail,
     % interpreter sub-msg (they change the state)
     NewState = change_receiver_state_for(Kind, Body, State),
-    % enitities sub-msg (they exchange info for entities)
+    % entities sub-msg (they exchange info for entities)
     case process_entity_sub_msg(Kind, {Flags, Body}, State) of
         not_managed ->
             ok;
         {data, D} ->
             send_data_to_reader(State, D);
+        {data_frag, DataFrag} ->
+            send_data_to_reader(State, DataFrag);
         {gap, G} ->
             send_gap_to_reader(State, G);
         {heartbeat, H} ->
@@ -149,14 +151,14 @@ send_data_to_reader(State,
                               SN,
                               Data});
 send_data_to_reader(State, {?ENTITYID_UNKNOWN, SrcEntityID, SN, Data}) ->
-    %io:format("Data for unknown, maybe writer is in PUSH-mode, should be broadcasted... \n"),
+    % io:format("Data for unknown, maybe writer is in PUSH-mode, should be broadcasted... \n"),
     rtps_participant:send_to_all_readers(participant,
                                          {#guId{prefix = State#state.sourceGuidPrefix,
                                                 entityId = SrcEntityID},
                                           SN,
                                           Data});
 send_data_to_reader(State, {DstEntityID, SrcEntityID, SN, Data}) ->
-    %io:format("Data for ~p\n",[DstEntityID]),
+    % io:format("Data for ~p\n",[DstEntityID]),
     R_GUID = #guId{prefix = State#state.destGuidPrefix, entityId = DstEntityID},
     rtps_full_reader:receive_data(R_GUID,
                                   {#guId{prefix = State#state.sourceGuidPrefix,
@@ -185,6 +187,7 @@ open_udp_locators(unicast,
                   [#locator{ip = _, port = P} | TL],
                   #state{openedSockets = Soc} = S) ->
     LocalInterface = rtps_network_utils:get_local_ip(),
+    % io:format("local interface ~p",[LocalInterface]),
     {ok, Socket} = gen_udp:open(P, [{ip, LocalInterface}, binary, {active, true}]),
     {ok, Port} = inet:port(Socket),
     open_udp_locators(unicast,
@@ -193,7 +196,6 @@ open_udp_locators(unicast,
 open_udp_locators(multicast,
                   [#locator{ip = IP, port = P} | TL],
                   #state{openedSockets = Soc} = S) ->
-    %io:format("~p.erl Opened Socket!\n",[?MODULE]),
     LocalInterface = rtps_network_utils:get_local_ip(),
     {ok, Socket} =
         gen_udp:open(P,
@@ -208,7 +210,8 @@ open_udp_locators(multicast,
                       S#state{openedSockets = [{multicast, Socket, Port, IP} | Soc]}).
 
 h_get_local_locators(#state{openedSockets =
-                                Sockets}) -> %io:format("Asking locators: ~p\n",[Sockets]),
+                                Sockets}) ->
+    %io:format("Asking locators: ~p\n",[Sockets]),
     [{Type,
       #locator{kind = ?LOCATOR_KIND_UDPv4,
                ip = I,
@@ -234,6 +237,8 @@ change_receiver_state_for(_, _, State) ->
 
 process_entity_sub_msg(?SUB_MSG_KIND_DATA, {Flags, Body}, _) ->
     handle_data(rtps_messages:parse_data(Flags, Body));
+process_entity_sub_msg(?SUB_MSG_KIND_DATA_FRAG, {Flags, Body}, _) ->
+    handle_data_frag(rtps_messages:parse_data_frag(Flags, Body));
 process_entity_sub_msg(?SUB_MSG_KIND_ACKNACK, {Flags, Body}, S) ->
     handle_acknack(S, rtps_messages:parse_acknack(Flags, Body));
 process_entity_sub_msg(?SUB_MSG_KIND_HEARTBEAT, {Flags, Body}, S) ->
@@ -274,11 +279,19 @@ handle_data({_QOS_LIST, _Reader, _Writer, _WriterSN}) ->
 % Data is user-defined binary in little endian
 handle_data({Reader, Writer, WriterSN, ?CDR_LE, SerializedPayload}) ->
     {data, {Reader, Writer, WriterSN, SerializedPayload}};
-% Inline-QOS for user data are ignored 
+% Inline-QOS for user data are ignored
 handle_data({_, Reader, Writer, WriterSN, ?CDR_LE, SerializedPayload}) ->
     {data, {Reader, Writer, WriterSN, SerializedPayload}};
 handle_data(D) ->
     io:format("Data unknown or rappresentation not supported by implementation: ~p\n",[D]),
+    not_managed.
+
+% We only expect datafrags from user defined topics
+% Inline-QOS are ignored (for now)
+handle_data_frag({Reader, Writer, WriterSN, DataFrag}) ->
+    {data_frag, {Reader, Writer, WriterSN, DataFrag}};
+handle_data_frag(D) ->
+    io:format("Data Frag unknown or rappresentation not supported by implementation: ~p\n",[D]),
     not_managed.
 
 handle_acknack(#state{sourceGuidPrefix = SRC, destGuidPrefix = DST},
