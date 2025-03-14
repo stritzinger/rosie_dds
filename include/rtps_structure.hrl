@@ -19,6 +19,13 @@
          unsent_changes = [],
          expectsInlineQos = false}).
 -record(change_for_reader, {change_key, status, is_relevant = true}).
+-record(data_frag, {
+        start_num       :: integer(),
+        count           :: integer(),
+        fragment_size   :: integer(),
+        sample_size     :: integer(),
+        fragments       :: binary()
+}).
 
 % status can be:
 % UNSENT, UNACKNOWLEDGED, REQUESTED, ACKNOWLEDGED, UNDERWAY
@@ -33,10 +40,10 @@
          readerGUID = #guId{},
          sn_set}).
 -record(acknack,
-        {writerGUID = #guId{}, 
-        readerGUID = #guId{}, 
-        final_flag, 
-        sn_range, 
+        {writerGUID = #guId{},
+        readerGUID = #guId{},
+        final_flag,
+        sn_range,
         count}).
 -record(heartbeat,
         {writerGUID = #guId{},
