@@ -15,7 +15,8 @@
 -behaviour(gen_server).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
--include("rtps_structure.hrl").
+-include_lib("kernel/include/logger.hrl").
+-include("../include/rtps_structure.hrl").
 
 -record(state,
         {participant = #participant{},
@@ -75,7 +76,10 @@ handle_call(get_cache, _, State) ->
 handle_call(_, _, State) ->
     {reply, ok, State}.
 
-handle_cast({receive_data, Data}, State) ->
+handle_cast({receive_data, {_, _, #data_frag{}} = DataFrag}, State) ->
+    {noreply, h_receive_data_frag(DataFrag, State)};
+handle_cast({receive_data, {_, _, Payload} = Data}, State)
+when is_binary(Payload); is_record(Payload, sedp_disc_endpoint_data) ->
     {noreply, h_receive_data(Data, State)};
 handle_cast({receive_gap, Gap}, State) ->
     {noreply, h_receive_gap(Gap, State)};
@@ -87,7 +91,8 @@ handle_cast({matched_writer_add, Proxy}, S) ->
     {noreply, h_matched_writer_add(Proxy, S)};
 handle_cast({matched_writer_remove, R}, S) ->
     {noreply, h_matched_writer_remove(R, S)};
-handle_cast(_, State) ->
+handle_cast(Cast, State) ->
+    error({unexpected_cast, Cast}),
     {noreply, State}.
 
 handle_info({send_acknack_if_needed, {WGUID, FF}}, State) ->
@@ -115,42 +120,45 @@ h_matched_writer_add(Proxy, #state{writer_proxies = WP} = S) ->
 h_matched_writer_remove(Guid, #state{writer_proxies = WP} = S) ->
     S#state{writer_proxies = [P || #writer_proxy{guid = G} = P <- WP, G /= Guid]}.
 
-missing_changes_update(WGUID, Changes, Min, Max) ->
-    PresentSN = [SN || #change_from_writer{change_key = {_, SN}} <- Changes],
+missing_changes_update(Changes, Min, Max) ->
     NewChanges =
-        [#change_from_writer{change_key = {WGUID, SN}, status = missing}
-         || SN <- lists:seq(Min, Max), not lists:member(SN, PresentSN)],
-    Changes ++ NewChanges.
+        maps:from_list([
+            {SN, #change_from_writer{status = missing}}
+            || SN <- lists:seq(Min, Max), not maps:is_key(SN, Changes)]),
+    maps:merge(Changes, NewChanges).
 
-gen_change_if_not_there(WGUID,LastSN,ToBeMarked) ->
-    case lists:member(LastSN, [ SN || #change_from_writer{ change_key = {_, SN}} <- ToBeMarked]) of
+gen_change_if_not_there(LastSN, ToBeMarked) ->
+    case lists:member(LastSN, [SN || {SN, _} <- ToBeMarked]) of
         true -> [];
-        false -> [#change_from_writer{ change_key = {WGUID, LastSN}}]
+        false -> [{LastSN, #change_from_writer{}}]
     end.
 
-lost_changes_update( WGUID, FirstSN, LastSN, Changes) ->
-    {ToBeMarked, Others} = lists:partition(fun(#change_from_writer{ change_key = {_, SN}, status = S}) -> 
-                                                ((S == unknown) or (S == missing)) and (SN < FirstSN) 
-                                            end,
-                                            Changes),
-    LastLostChange = case LastSN < FirstSN of 
-        true -> gen_change_if_not_there(WGUID,LastSN,ToBeMarked);
+lost_changes_update(Changes, FirstSN, LastSN) ->
+    {ToBeMarked, Others} = lists:partition(
+        fun({SN, #change_from_writer{status = S}}) ->
+            ((S == unknown) or (S == missing)) and (SN < FirstSN)
+        end,
+        maps:to_list(Changes)),
+    LastLostChange = case LastSN < FirstSN of
+        true -> gen_change_if_not_there(LastSN, ToBeMarked);
         false -> []
     end,
-    Others ++ [ C#change_from_writer{ status = lost} || C <- ToBeMarked ++ LastLostChange].
+    maps:from_list(
+        Others ++
+        [{SN, C#change_from_writer{status = lost}} || {SN,C} <- ToBeMarked ++ LastLostChange]).
 
 manage_heartbeat_for_writer(#heartbeat{writerGUID = WGUID,
                                        final_flag = FF,
                                        min_sn = Min,
                                        max_sn = Max},
-                            #writer_proxy{changes_from_writer = Changes} = W,
+                            #writer_proxy{changes = Changes} = W,
                             #state{writer_proxies = WP, heartbeatResponseDelay = Delay} = S) ->
     %io:format("~p\n",[WGUID]),
     Others = [P || #writer_proxy{guid = G} = P <- WP, G /= WGUID],
-    NewChangeList = missing_changes_update(WGUID, Changes, Min, Max),
-    Check2 = lost_changes_update(WGUID, Min, Max, NewChangeList),
+    NewChanges = missing_changes_update(Changes, Min, Max),
+    NewChanges2 = lost_changes_update(NewChanges, Min, Max),
     erlang:send_after(Delay, self(), {send_acknack_if_needed, {WGUID, FF}}),
-    S#state{writer_proxies = Others ++ [W#writer_proxy{changes_from_writer = Check2}]}.
+    S#state{writer_proxies = Others ++ [W#writer_proxy{changes = NewChanges2}]}.
 
 h_receive_heartbeat(#heartbeat{writerGUID = WGUID,
                                min_sn = _Min,
@@ -164,21 +172,22 @@ h_receive_heartbeat(#heartbeat{writerGUID = WGUID,
             manage_heartbeat_for_writer(HB, W, S)
     end.
 
-filter_missing_sn(ChangeList) ->
-    [SN || #change_from_writer{change_key = {_, SN}, status = S} <- ChangeList, S == missing].
+filter_missing_sn(Changes) ->
+    [SN || {SN, #change_from_writer{status = S}}
+        <- maps:to_list(Changes), S == missing].
 
-available_change_max([]) ->
+available_change_max(Changes) when Changes == #{} ->
     0;
-available_change_max(ChangeList) ->
-    lists:max([SN || #change_from_writer{change_key = {_, SN}} <- ChangeList]).
+available_change_max(Changes) ->
+    lists:max(maps:keys(Changes)).
 
 % 0 means flag not set, an acknowledgment must be sent
 h_send_acknack_if_needed(WGUID, 0, #state{writer_proxies = WP} = S) ->
     case [P || #writer_proxy{guid = G} = P <- WP, G == WGUID] of
         [P | _] ->
-            case filter_missing_sn(P#writer_proxy.changes_from_writer) of
+            case filter_missing_sn(P#writer_proxy.changes) of
                 [] ->
-                    Missing = available_change_max(P#writer_proxy.changes_from_writer) + 1;
+                    Missing = available_change_max(P#writer_proxy.changes) + 1;
                 List ->
                     Missing = List
             end,
@@ -190,7 +199,7 @@ h_send_acknack_if_needed(WGUID, 0, #state{writer_proxies = WP} = S) ->
 h_send_acknack_if_needed(WGUID, 1, #state{writer_proxies = WP} = S) ->
     case [P || #writer_proxy{guid = G} = P <- WP, G == WGUID] of
         [P | _] ->
-            case filter_missing_sn(P#writer_proxy.changes_from_writer) of
+            case filter_missing_sn(P#writer_proxy.changes) of
                 [] ->
                     S;
                 List ->
@@ -225,68 +234,85 @@ send_acknack(WGUID,
     rtps_gateway:send(G, {Datagram, {L#locator.ip, L#locator.port}}),
     S#state{acknack_count = C + 1}.
 
-is_in_change_list(CFW, SN) ->
-    case [C || #change_from_writer{change_key = {_, WSN}} = C <- CFW, SN == WSN] of
-        [] ->
-            false;
-        _ ->
-            true
-    end.
-
-add_change_from_writer_if_needed(WGUID, CFW, SN) ->
-    case is_in_change_list(CFW, SN) of
-        true ->
-            CFW;
-        false ->
-            CFW ++ [#change_from_writer{change_key = {WGUID, SN}, status = missing}]
-    end.
-
-sn_received(#change_from_writer{change_key = {_WGUID, SN}, status = _S} = C, ReceivedSN)
-    when SN == ReceivedSN ->
-    C#change_from_writer{status = received};
-sn_received(C, _) ->
-    C.
-
-h_receive_data({Writer, SN, Data},
+h_receive_data({WriterID, SN, Data},
                #state{history_cache = Cache, writer_proxies = WP} = State) ->
-    case [P || #writer_proxy{guid = WGUID} = P <- WP, WGUID == Writer] of
+    {Match, Proxies} =
+        lists:partition(fun(#writer_proxy{guid = ID}) when ID == WriterID-> true;
+                           (_) -> false end,
+                        WP),
+    case Match of
         [] ->
             State;
-        [Proxy | _] ->
-            rtps_history_cache:add_change(Cache, data_to_cache_change({Writer, SN, Data})),
-            Others = [P || #writer_proxy{guid = WGUID} = P <- WP, WGUID /= Writer],
-            _CFW =
-                add_change_from_writer_if_needed(Proxy#writer_proxy.guid,
-                                                 Proxy#writer_proxy.changes_from_writer,
-                                                 SN),
-            CFW = lists:map(fun(Change) -> sn_received(Change, SN) end, _CFW),
-            State#state{writer_proxies = Others ++ [Proxy#writer_proxy{changes_from_writer = CFW}]}
+        [Proxy] ->
+            rtps_history_cache:add_change(Cache, data_to_cache_change({WriterID, SN, Data})),
+            Change = maps:get(SN,
+                             Proxy#writer_proxy.changes,
+                            #change_from_writer{status = missing}),
+            ChangeReceived = Change#change_from_writer{status = received},
+            NewChanges = maps:put(SN, ChangeReceived, Proxy#writer_proxy.changes),
+            State#state{
+                writer_proxies = [Proxy#writer_proxy{changes = NewChanges} | Proxies]};
+        _ ->
+            error({unimplemented, multiple_writer_proxies})
     end.
 
-h_receive_gap(#gap{writerGUID = Writer, sn_set = SET},
-               #state{history_cache = _Cache, writer_proxies = WP} = State) -> 
-    case [P || #writer_proxy{guid = WGUID} = P <- WP, WGUID == Writer] of
-        [] -> 
+h_receive_data_frag({WriterID, SN, DataFrag},
+               #state{history_cache = Cache, writer_proxies = WP} = State) ->
+    #data_frag{
+        start_num = FragmentStartingNum,
+        count = FragmentsInSubmessage,
+        fragment_size = FragmentSize,
+        sample_size = SampleSize,
+        fragments = Fragments
+     } = DataFrag,
+    {Match, Proxies} =
+        lists:partition(fun(#writer_proxy{guid = ID}) when ID == WriterID -> true;
+                           (_) -> false end,
+                        WP),
+    case Match of
+        [] ->
             State;
-        [Selected | _] ->
+        [Proxy] ->
+            NewProxy = add_fragments_to_proxy(Proxy, DataFrag),
+            State#state{writer_proxies = [NewProxy|Proxies]};
+        _ ->
+            error({unimplemented, multiple_writer_proxies})
+    end.
+
+h_receive_gap(#gap{writerGUID = WriterID, sn_set = SET},
+               #state{history_cache = _Cache, writer_proxies = WP} = State) ->
+    {Match, Proxies} =
+            lists:partition(fun(#writer_proxy{guid = ID}) when ID == WriterID -> true;
+                               (_) -> false end,
+                            WP),
+    case Match of
+        [] ->
+            State;
+        [Proxy] ->
             %io:format("GAP processing...for numbers ~p\n", [SET]),
-            %DEBUG_SN_STATES = [ {SN,S} || #change_from_writer{change_key = {_,SN}, status = S} <- Selected#writer_proxy.changes_from_writer],
+            %DEBUG_SN_STATES = [ {SN,S} || #change_from_writer{change_key = {_,SN}, status = S} <- Selected#writer_proxy.changes],
             %io:format("Current changes state ~p\n", [DEBUG_SN_STATES]),
-            Others = [P || #writer_proxy{guid = WGUID} = P <- WP, WGUID /= Writer],
             AddedChanges = lists:foldl(
-                fun (SN, CFW) -> 
-                        add_change_from_writer_if_needed(Selected#writer_proxy.guid,
-                                    CFW,
-                                    SN)
-                end,  
-                Selected#writer_proxy.changes_from_writer, 
+                fun (SN, AllChanges) ->
+                    Change = maps:get(SN,
+                                     AllChanges
+                                     #change_from_writer{status = missing}),
+                    maps:put(SN, Change, AllChanges)
+                end,
+                Proxy#writer_proxy.changes,
                 SET),
 
-            AddedAndMarked = lists:map(fun(#change_from_writer{change_key = {_, SN}} = C) -> 
+            AddedAndMarked = maps:map(fun({SN, C}) ->
                                             case lists:member(SN, SET) of
-                                                true -> C#change_from_writer{status = received};
-                                                false -> C
+                                                true -> {SN, C#change_from_writer{status = received}};
+                                                false -> {SN, C}
                                             end
                                         end, AddedChanges),
-            State#state{writer_proxies = Others ++ [Selected#writer_proxy{changes_from_writer = AddedAndMarked}]}
+            State#state{writer_proxies = [Proxy#writer_proxy{changes = AddedAndMarked} | Proxies]};
+        _ ->
+            error({unimplemented, multiple_writer_proxies})
     end.
+
+
+add_fragments_to_proxy(#writer_proxy{guid = WriterID} = P, DataFrag) ->
+    P.
