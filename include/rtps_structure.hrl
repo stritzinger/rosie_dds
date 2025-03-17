@@ -19,13 +19,17 @@
          unsent_changes = [],
          expectsInlineQos = false}).
 
--record(change_for_reader, {change_key, status, is_relevant = true}).
-% change_for_reader status can be:
-% UNSENT, UNACKNOWLEDGED, REQUESTED, ACKNOWLEDGED, UNDERWAY
+-record(change_for_reader, {
+        change_key,
+        status :: unsent | unacknowledged | requested | acknowledged | underway,
+        is_relevant = true
+}).
 
--record(change_from_writer, {change_key, status=unknown, is_relevant = true}).
-% change_from_writer status can be:
-% LOST, MISSING, RECEIVED, UNKNOWN
+-record(change_from_writer, {
+        status = unknown :: lost | missing | received | unknown,
+        is_relevant = true,
+        fragments :: undefined | map() % used if is fragmented
+}).
 
 -record(data_frag, {
         start_num       :: integer(),
@@ -62,7 +66,7 @@
         {guid,
          unicastLocatorList = [],
          multicastLocatorList = [],
-         changes_from_writer = []}).        %remoteGroupEntityId = #entityId{}
+         changes = #{} :: #{integer() => #change_from_writer{}}}).
 -record(subMessageHeader, {kind, length, flags}).
 -record(messageReceiver,
         {sourceVersion,

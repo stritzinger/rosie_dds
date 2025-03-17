@@ -20,8 +20,8 @@
     serialize_acknack/1
 ]).
 
--include("rtps_structure.hrl").
--include("rtps_constants.hrl").
+-include("../include/rtps_structure.hrl").
+-include("../include/rtps_constants.hrl").
 
 %% produces an RTPS HEADER
 header(GuidPrefix) ->
