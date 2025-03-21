@@ -12,14 +12,18 @@
     remote_writer_remove/2,
     match_remote_writers/2
 ]).
-        
+
 -behaviour(gen_server).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -include("rtps_structure.hrl").
 
 -record(state,
-        {topic, listener = not_set, rtps_reader, matched_data_writers = [], history_cache}).
+        {topic,
+        listener = not_set,
+        rtps_reader,
+        matched_data_writers = [],
+        history_cache}).
 
 start_link(Setup) ->
     gen_server:start_link(?MODULE, Setup, []).
@@ -90,18 +94,17 @@ handle_cast({on_change_available, ChangeKey},
             #state{rtps_reader = GUID, listener = {Module, Name}} = S) ->
     Module:on_data_available(Name, {{data_r_of, GUID}, ChangeKey}),
     {noreply, S};
-handle_cast({match_remote_writers, Writers},
-            #state{matched_data_writers = _DW, rtps_reader = Reader} = S) ->
+handle_cast({match_remote_writers, Writers}, #state{rtps_reader = Reader} = S) ->
     rtps_full_reader:update_matched_writers(Reader, Writers),
-    {noreply, S#state{matched_data_writers = [G || #writer_proxy{guid = G} <- Writers]}};
-handle_cast({remote_writer_add, W},
+    {noreply, S#state{matched_data_writers = maps:keys(Writers)}};
+handle_cast({remote_writer_add, {Guid, W}},
             #state{matched_data_writers = DW, rtps_reader = Reader} = S) ->
-    rtps_full_reader:matched_writer_add(Reader, W),
-    {noreply, S#state{matched_data_writers = [W#writer_proxy.guid | DW]}};
-handle_cast({remote_writer_remove, Writer},
+    rtps_full_reader:matched_writer_add(Reader, {Guid, W}),
+    {noreply, S#state{matched_data_writers = [Guid | DW]}};
+handle_cast({remote_writer_remove, WriterGuid},
             #state{matched_data_writers = DW, rtps_reader = Reader} = S) ->
-    rtps_full_reader:matched_writer_remove(Reader, Writer),
-    {noreply, S#state{matched_data_writers = [W || W <- DW, W /= Writer]}};
+    rtps_full_reader:matched_writer_remove(Reader, WriterGuid),
+    {noreply, S#state{matched_data_writers = lists:delete(WriterGuid, DW)}};
 handle_cast(_, State) ->
     {noreply, State}.
 

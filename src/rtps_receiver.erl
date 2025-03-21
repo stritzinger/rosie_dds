@@ -17,8 +17,8 @@
 -behaviour(gen_server).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
--include("rtps_structure.hrl").
--include("rtps_constants.hrl").
+-include("../include/rtps_structure.hrl").
+-include("../include/rtps_constants.hrl").
 
 -record(state,
         {openedSockets = [],
@@ -135,6 +135,8 @@ sub_msg_parsing_loop(State, PayLoad) ->
             send_gap_to_reader(State, G);
         {heartbeat, H} ->
             send_heartbit_to_reader(State, H);
+        {heartbeat_frag, H} ->
+            send_heartbit_frag_to_reader(State, H);
         {acknack, A} ->
             send_acknack_to_writer(State, A)
     end,
@@ -178,6 +180,15 @@ send_heartbit_to_reader(_State,
     %io:format("should send heartbeat ~p to all readers inside me \n",[H]), ok,
     rtps_participant:send_to_all_readers(participant, H);
 send_heartbit_to_reader(_State, #heartbeat{readerGUID = R} = H) ->
+    [P | _] = pg:get_members(R),
+    rtps_full_reader:receive_heartbeat(P, H).
+
+send_heartbit_frag_to_reader(_State,
+                        #heartbeat_frag{readerGUID = #guId{prefix = _Prefix, entityId = RID}} = H)
+    when RID == ?ENTITYID_UNKNOWN ->
+    %io:format("should send heartbeat frag ~p to all readers inside me \n",[H]), ok,
+    rtps_participant:send_to_all_readers(participant, H);
+send_heartbit_frag_to_reader(_State, #heartbeat_frag{readerGUID = R} = H) ->
     [P | _] = pg:get_members(R),
     rtps_full_reader:receive_heartbeat(P, H).
 
@@ -243,6 +254,8 @@ process_entity_sub_msg(?SUB_MSG_KIND_ACKNACK, {Flags, Body}, S) ->
     handle_acknack(S, rtps_messages:parse_acknack(Flags, Body));
 process_entity_sub_msg(?SUB_MSG_KIND_HEARTBEAT, {Flags, Body}, S) ->
     handle_heartbeat(S, rtps_messages:parse_heartbeat(Flags, Body));
+process_entity_sub_msg(?SUB_MSG_KIND_HEARTBEAT_FRAG, {Flags, Body}, S) ->
+    handle_heartbeat_frag(S, rtps_messages:parse_heartbeat_frag(Flags, Body));
 process_entity_sub_msg(?SUB_MSG_KIND_GAP, {Flags, Body}, S) ->
     handle_gap(S, rtps_messages:parse_gap(Flags, Body));
 process_entity_sub_msg(?SUB_MSG_KIND_PAD, {_Flags, _Body}, _) ->
@@ -303,10 +316,16 @@ handle_acknack(#state{sourceGuidPrefix = SRC, destGuidPrefix = DST},
 
 handle_heartbeat(#state{sourceGuidPrefix = SRC, destGuidPrefix = DST},
                  #heartbeat{writerGUID = #guId{entityId = WID},
-                            readerGUID = #guId{entityId = RID}} =
-                     H) ->
+                            readerGUID = #guId{entityId = RID}} = H) ->
     {heartbeat,
      H#heartbeat{writerGUID = #guId{prefix = SRC, entityId = WID},
+                 readerGUID = #guId{prefix = DST, entityId = RID}}}.
+
+handle_heartbeat_frag(#state{sourceGuidPrefix = SRC, destGuidPrefix = DST},
+                 #heartbeat_frag{writerGUID = #guId{entityId = WID},
+                                 readerGUID = #guId{entityId = RID}} = H) ->
+    {heartbeat_frag,
+     H#heartbeat_frag{writerGUID = #guId{prefix = SRC, entityId = WID},
                  readerGUID = #guId{prefix = DST, entityId = RID}}}.
 
 handle_gap(#state{sourceGuidPrefix = SRC, destGuidPrefix = DST},
