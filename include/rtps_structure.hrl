@@ -26,9 +26,12 @@
 }).
 
 -record(change_from_writer, {
-        status = unknown :: lost | missing | received | unknown,
-        is_relevant = true,
-        fragments :: undefined | map() % used if is fragmented
+        status = unknown        :: lost | missing | received | unknown,
+        is_relevant = true      :: boolean(),
+        % following fields are just for fragmented changes
+        fragmented = false      :: boolean(),
+        size_counter = 0        :: integer(),
+        fragments = #{}         :: map() % used if is fragmented
 }).
 
 -record(data_frag, {
