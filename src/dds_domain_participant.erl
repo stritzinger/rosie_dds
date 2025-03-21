@@ -131,34 +131,32 @@ h_update_participants_list(PL,
     Pub_Annoucers =
         filter_participants_with(PL, ?DISC_BUILTIN_ENDPOINT_PUBLICATIONS_ANNOUNCER),
     MatchedWriters_P =
-        [#writer_proxy{guid =
-                           #guId{prefix = P,
-                                 entityId = ?ENTITYID_SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER},
-                       unicastLocatorList = U,
-                       multicastLocatorList = M}
+        [{#guId{prefix = P,
+                entityId = ?ENTITYID_SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER},
+          #writer_proxy{unicastLocatorList = U,
+                        multicastLocatorList = M}}
          || #spdp_disc_part_data{guidPrefix = P,
                                  meta_uni_locator_l = U,
                                  meta_multi_locator_l = M}
                 <- Pub_Annoucers],
     %io:format("Subscriver is: ~p\n",[DS]),
     DR_P = dds_subscriber:lookup_datareader(dds_default_subscriber, builtin_pub_detector),
-    dds_data_r:match_remote_writers(DR_P, MatchedWriters_P),
+    dds_data_r:match_remote_writers(DR_P, maps:from_list(MatchedWriters_P)),
 
     Sub_Annoucers =
         filter_participants_with(PL, ?DISC_BUILTIN_ENDPOINT_SUBSCRIPTIONS_ANNOUNCER),
     MatchedWriters_S =
-        [#writer_proxy{guid =
-                           #guId{prefix = P,
-                                 entityId = ?ENTITYID_SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER},
-                       unicastLocatorList = U,
-                       multicastLocatorList = M}
+        [{#guId{prefix = P,
+                entityId = ?ENTITYID_SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER},
+          #writer_proxy{unicastLocatorList = U,
+                        multicastLocatorList = M}}
          || #spdp_disc_part_data{guidPrefix = P,
                                  meta_uni_locator_l = U,
                                  meta_multi_locator_l = M}
                 <- Sub_Annoucers],
     %io:format("Sub announcer is : ~p\n",[MatchedWriters_S]),
     DR_S = dds_subscriber:lookup_datareader(dds_default_subscriber, builtin_sub_detector),
-    dds_data_r:match_remote_writers(DR_S, MatchedWriters_S),
+    dds_data_r:match_remote_writers(DR_S, maps:from_list(MatchedWriters_S)),
 
     % update the list of participants
     S#state{known_participants = PL}.

@@ -15,6 +15,9 @@
 -define(TIME_ZERO, #time{ seconds = 16#00000000 , fraction = 16#00000000 }).
 -define(TIME_INVALID, #time{ seconds = 16#ffffffff , fraction = 16#ffffffff }).
 -define(TIME_INFINITE, #time{ seconds = 16#ffffffff , fraction = 16#fffffffe }).
+% Submessage Flags
+-define(BIG_ENDIAN, 0).
+-define(LITTLE_ENDIAN, 1).
 % Locator Kinds
 -define(LOCATOR_KIND_INVALID, - 1).
 -define(LOCATOR_KIND_RESERVED, 0).

@@ -26,12 +26,13 @@
 }).
 
 -record(change_from_writer, {
-        status = unknown        :: lost | missing | received | unknown,
-        is_relevant = true      :: boolean(),
+        status = unknown          :: lost | missing | received | unknown,
+        is_relevant = true        :: boolean(),
         % following fields are just for fragmented changes
-        fragmented = false      :: boolean(),
-        size_counter = 0        :: integer(),
-        fragments = #{}         :: map() % used if is fragmented
+        fragmented = false        :: boolean(),
+        last_fragment_number = 0  :: integer(), % last available fragment number
+        size_counter = 0          :: integer(),
+        fragments = #{}           :: map() % used if is fragmented
 }).
 
 -record(data_frag, {
@@ -58,6 +59,12 @@
          final_flag = not_set,
          readerGUID = #guId{},
          count}).
+-record(heartbeat_frag,
+        {writerGUID = #guId{},
+         readerGUID = #guId{},
+         sequence_number,
+         last_fragment_number,
+         count}).
 -record(reader_proxy,
         {guid,
          ready= false,
@@ -66,8 +73,7 @@
          multicastLocatorList = [],
          changes_for_reader = []}).
 -record(writer_proxy,
-        {guid,
-         unicastLocatorList = [],
+        {unicastLocatorList = [],
          multicastLocatorList = [],
          changes = #{} :: #{integer() => #change_from_writer{}}}).
 -record(subMessageHeader, {kind, length, flags}).

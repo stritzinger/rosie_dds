@@ -12,6 +12,7 @@
     parse_data/2,
     parse_data_frag/2,
     parse_heartbeat/2,
+    parse_heartbeat_frag/2,
     parse_acknack/2,
     parse_gap/2,
     parse_param_list/1,
@@ -710,6 +711,23 @@ parse_heartbeat(<<_:6, Final:1, _:1>>,
                min_sn = MinSN,
                max_sn = MaxSN,
                count = C}.
+
+parse_heartbeat_frag(<<_:7, ?LITTLE_ENDIAN:1>>,
+                <<Reader_key:3/binary,
+                  Reader_kind:8,
+                  Writer_key:3/binary,
+                  Writer_kind:8,
+                  0:32/little,
+                  SN:32/little,
+                  0:32/little,
+                  LastFragSN:32/little,
+                  C:32/little>>) ->
+    #heartbeat_frag{
+        writerGUID = #guId{entityId = #entityId{key = Writer_key, kind = Writer_kind}},
+        readerGUID = #guId{entityId = #entityId{key = Reader_key, kind = Reader_kind}},
+        sequence_number = SN,
+        last_fragment_number = LastFragSN,
+        count = C}.
 
 -ifdef(TEST).
 

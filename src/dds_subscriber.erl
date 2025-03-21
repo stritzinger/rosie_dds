@@ -1,9 +1,9 @@
 -module(dds_subscriber).
 
 -export([
-    start_link/0, 
-    get_all_data_readers/1, 
-    create_datareader/2, 
+    start_link/0,
+    get_all_data_readers/1,
+    create_datareader/2,
     lookup_datareader/2,
     delete_datareader/2,
     dispose_data_readers/1
@@ -71,7 +71,7 @@ init([]) ->
     },
     supervisor:start_child(dds_datareaders_pool_sup,
                            [{discovery_reader, P_info, SPDP_R_cfg, SPDP_R_qos}]),
-    
+
     SEDP_qos = #qos_profile{durability = ?TRANSIENT_LOCAL_DURABILITY_QOS, history = {?KEEP_ALL_HISTORY_QOS, -1}},
     % The publication-reader(aka detector) will listen to which topics the other participants want to publish
     GUID_p =
@@ -138,9 +138,9 @@ handle_call({lookup_datareader, builtin_sub_detector}, _, State) ->
 handle_call({lookup_datareader, Topic}, _, #state{data_readers = DR} = S) ->
     [R | _] = [ R || {R,{_,T}} <- maps:to_list(DR), T == Topic],
     {reply, R, S};
-handle_call({delete_datareader, {_,GUID} = Reader}, _, #state{rtps_participant_info = P_info, 
+handle_call({delete_datareader, {_,GUID} = Reader}, _, #state{rtps_participant_info = P_info,
                                                             data_readers = DR} = S) ->
-    Sub_announcer = dds_publisher:lookup_datawriter(dds_default_publisher, builtin_sub_announcer),                                                            
+    Sub_announcer = dds_publisher:lookup_datawriter(dds_default_publisher, builtin_sub_announcer),
     dds_data_w:write(Sub_announcer, produce_sedp_endpoint_leaving(P_info, GUID#guId.entityId)),
     {SupervisorPid, _} = maps:get(Reader,DR),
     supervisor:terminate_child(dds_datareaders_pool_sup, SupervisorPid),
@@ -158,9 +158,9 @@ handle_call(_, _, State) ->
     {reply, ok, State}.
 
 handle_cast({on_data_available, {DR_id, ChangeKey}}, #state{data_readers = DRs} = S) ->
-    Change = dds_data_r:read(DR_id, ChangeKey), 
+    Change = dds_data_r:read(DR_id, ChangeKey),
     % io:format("DDS: change: ~p, with key: ~p\n", [Change,ChangeKey]),
-    Data = Change#cacheChange.data, 
+    Data = Change#cacheChange.data,
     % io:format("~p\n",[Data#sedp_disc_endpoint_data.status_qos]),
     case ?ENDPOINT_LEAVING(Data#sedp_disc_endpoint_data.status_qos) of
         true ->
@@ -169,7 +169,7 @@ handle_cast({on_data_available, {DR_id, ChangeKey}}, #state{data_readers = DRs} 
             ToBeMatched =
                 [R
                  || {R,{_,T}} <- maps:to_list(DRs),
-                    (T#dds_user_topic.name == Data#sedp_disc_endpoint_data.topic_name) and 
+                    (T#dds_user_topic.name == Data#sedp_disc_endpoint_data.topic_name) and
                     (T#dds_user_topic.type_name ==  Data#sedp_disc_endpoint_data.topic_type)],
             %io:format("DDS: discovered publisher of topic: ~p\n", [Data#sedp_disc_endpoint_data.topic_name]),
             %io:format("DDS: i have theese topics: ~p\n", [[ T || {_,T,_} <- DRs]]),
@@ -225,9 +225,9 @@ match_reader_with_writer(DR, WriterData, Participants) ->
         [P
          || #spdp_disc_part_data{guidPrefix = Pref} = P <- Participants,
             Pref == WriterData#sedp_disc_endpoint_data.endpointGuid#guId.prefix],
+    Guid = WriterData#sedp_disc_endpoint_data.endpointGuid,
     Proxy =
-        #writer_proxy{guid = WriterData#sedp_disc_endpoint_data.endpointGuid,
-                      unicastLocatorList = P#spdp_disc_part_data.default_uni_locator_l,
+        #writer_proxy{unicastLocatorList = P#spdp_disc_part_data.default_uni_locator_l,
                       multicastLocatorList = P#spdp_disc_part_data.default_multi_locator_l},
     %io:format("Matching: ~p with ~p\n",[DR,Proxy]),
-    dds_data_r:remote_writer_add(DR, Proxy).
+    dds_data_r:remote_writer_add(DR, {Guid, Proxy}).
