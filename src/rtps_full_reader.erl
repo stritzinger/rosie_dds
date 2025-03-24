@@ -139,8 +139,11 @@ data_to_cache_change({Writer, SN, Data}) ->
                  sequenceNumber = SN,
                  data = Data}.
 
-h_update_matched_writers(NewProxies, #state{writer_proxies = WP} = S) ->
-    %io:format("Updating with proxy: ~p\n",[Proxies]),
+h_update_matched_writers(Proxies, #state{writer_proxies = WP} = S) ->
+    CurrentProxyes = maps:keys(WP),
+    NewProxies = maps:filter(
+        fun(Key, _) -> not lists:member(Key, CurrentProxyes) end,
+        Proxies),
     S#state{writer_proxies = maps:merge(WP, NewProxies)}.
 
 h_matched_writer_add({Guid, Proxy}, #state{writer_proxies = WP} = S) ->
@@ -412,7 +415,7 @@ message_matches_proxy(#heartbeat_frag{writerGUID = WriterID},
 message_matches_proxy(#gap{writerGUID = WriterID},
                         #state{writer_proxies = WP}) ->
     maps:is_key(WriterID, WP);
-message_matches_proxy({WriterID, _, _}, #state{writer_proxies = WP}) ->
+message_matches_proxy(#guId{} = WriterID, #state{writer_proxies = WP}) ->
     maps:is_key(WriterID, WP);
-message_matches_proxy(WriterID, #state{writer_proxies = WP}) ->
+message_matches_proxy({#guId{} = WriterID, _, _}, #state{writer_proxies = WP}) ->
     maps:is_key(WriterID, WP).

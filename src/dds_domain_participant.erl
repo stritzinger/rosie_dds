@@ -139,7 +139,7 @@ h_update_participants_list(PL,
                                  meta_uni_locator_l = U,
                                  meta_multi_locator_l = M}
                 <- Pub_Annoucers],
-    %io:format("Subscriver is: ~p\n",[DS]),
+    %io:format("Pub announcer is: ~p\n",[MatchedWriters_P]),
     DR_P = dds_subscriber:lookup_datareader(dds_default_subscriber, builtin_pub_detector),
     dds_data_r:match_remote_writers(DR_P, maps:from_list(MatchedWriters_P)),
 
