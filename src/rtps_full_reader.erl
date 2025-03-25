@@ -18,7 +18,7 @@
 -include_lib("stdlib/include/assert.hrl").
 -include_lib("kernel/include/logger.hrl").
 -include("../include/rtps_structure.hrl").
-
+-include("../include/rtps_constants.hrl").
 -record(state,
         {participant = #participant{},
          entity = #endPoint{},
@@ -461,16 +461,20 @@ rebuild_sample(SampleSize,
                #change_from_writer{
                     fragmented = true,
                     fragments = Fragments} = Change) ->
-    DataSample = list_to_binary(
+    <<EncapsulationKind:16,
+      _:16, % unused encapsulationoptions
+      SerializedPayload/binary>> = list_to_binary(
         [B || {_, B} <- lists:sort(maps:to_list(Fragments))]
     ),
-    ?assert(size(DataSample) == SampleSize),
+    <<CDR_LE:16>> = ?CDR_LE,
+    ?assertMatch(CDR_LE, EncapsulationKind),
+    ?assert(size(SerializedPayload) == SampleSize - 4),
     NewRecord = Change#change_from_writer{
         status = received,
         fragmented = false,
         size_counter = 0,
         fragments = #{}},
-    {DataSample, NewRecord}.
+    {SerializedPayload, NewRecord}.
 
 store_sample(Cache, WriterID, SN, Data) ->
     CacheChange = data_to_cache_change({WriterID, SN, Data}),
