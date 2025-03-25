@@ -30,8 +30,9 @@
         is_relevant = true        :: boolean(),
         % following fields are just for fragmented changes
         fragmented = false        :: boolean(),
-        last_fragment_number = 0  :: integer(), % last available fragment number
-        size_counter = 0          :: integer(),
+        last_available_fragment_number  :: undefined | integer(),
+        size_counter = 0          :: integer(), % size of received fragments
+        expected_fragments        :: integer(), % expected number of fragments
         fragments = #{}           :: map() % used if is fragmented
 }).
 
@@ -64,6 +65,12 @@
          readerGUID = #guId{},
          sequence_number,
          last_fragment_number,
+         count}).
+-record(nackfrag,
+        {writerGUID = #guId{},
+         readerGUID = #guId{},
+         sn,
+         missing_fragments,
          count}).
 -record(reader_proxy,
         {guid,

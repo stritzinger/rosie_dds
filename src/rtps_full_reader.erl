@@ -26,7 +26,8 @@
          writer_proxies = #{} :: #{#guId{} => #writer_proxy{}},
          heartbeatResponseDelay = 20, %default should be 500
          heartbeatSuppressionDuration = 0,
-         acknack_count = 0}).
+         acknack_count = 0,
+         nackfrag_count = 0}).
 
 %API
 start_link({Participant, ReaderConfig}) ->
@@ -217,16 +218,28 @@ manage_heartbeat_frag_for_writer(#heartbeat_frag{writerGUID = WGUID,
         true ->
             % we use the heartbeatResponseDelay for nackfrags too
             erlang:send_after(Delay, self(), {send_nackfrag_if_needed, WGUID}),
-            NewChange = Change#change_from_writer{last_fragment_number = LF},
+            NewChange = Change#change_from_writer{last_available_fragment_number = LF},
             maps:put(SN, NewChange, Changes);
         false ->
             Changes
     end,
     W#writer_proxy{changes = NewChanges}.
 
-filter_missing_sn(Changes) ->
-    [SN || {SN, #change_from_writer{status = S}}
-        <- maps:to_list(Changes), S == missing].
+missing_changes(Changes) ->
+    maps:filter(fun
+        (_, #change_from_writer{status = missing}) ->
+            true;
+        (_, _) ->
+            false
+    end, Changes).
+
+fragmented_changes(Changes) ->
+    maps:filter(fun
+        (_, #change_from_writer{fragmented = true}) ->
+            true;
+        (_, _) ->
+            false
+    end, Changes).
 
 available_change_max(Changes) when Changes == #{} ->
     0;
@@ -236,21 +249,34 @@ available_change_max(Changes) ->
 % 0 means flag not set, an acknowledgment must be sent
 h_send_acknack_if_needed(WGUID, 0, #state{writer_proxies = WP} = S) ->
     Proxy = maps:get(WGUID, WP),
-    case filter_missing_sn(Proxy#writer_proxy.changes) of
-        [] ->
-            Missing = available_change_max(Proxy#writer_proxy.changes) + 1;
-        List ->
-            Missing = List
+    Missing = missing_changes(Proxy#writer_proxy.changes),
+    Fragmented = fragmented_changes(Missing),
+    MissingSN = case maps:size(Missing) of
+        0 -> available_change_max(Proxy#writer_proxy.changes) + 1;
+        _ -> maps:keys(Missing)
     end,
-    send_acknack(WGUID, Missing, S);
+    S1 = send_acknack(WGUID, MissingSN, S),
+    case maps:size(Fragmented) of
+        0 -> S1;
+        _ -> lists:foldl(fun(F, State) -> send_nackfrag(WGUID, F, State) end,
+                        S1,
+                        maps:to_list(Fragmented))
+    end;
 % 1 means flag set, i acknoledge only if i know to miss some data
 h_send_acknack_if_needed(WGUID, 1, #state{writer_proxies = WP} = S) ->
     Proxy = maps:get(WGUID, WP),
-    case filter_missing_sn(Proxy#writer_proxy.changes) of
-        [] ->
-            S;
-        List ->
-            send_acknack(WGUID, List, S)
+    Missing = missing_changes(Proxy#writer_proxy.changes),
+    Fragmented = fragmented_changes(Missing),
+    case maps:size(Missing) of
+        0 -> S;
+        _ ->
+            S1 = send_acknack(WGUID, maps:keys(Missing), S),
+            case maps:size(Fragmented) of
+                0 -> S1;
+                _ -> lists:foldl(fun(F, State) -> send_nackfrag(WGUID, F, State) end,
+                                S1,
+                                maps:to_list(Fragmented))
+            end
     end.
 
 h_send_nackfrag_if_needed(_WGUID, #state{writer_proxies = _WP} = S) ->
@@ -282,13 +308,56 @@ send_acknack(WGUID,
     rtps_gateway:send(G, {Datagram, {FirstL#locator.ip, FirstL#locator.port}}),
     S#state{acknack_count = C + 1}.
 
+send_nackfrag(WGUID, {SN, Change}, #state{entity = #endPoint{guid = RGUID},
+                                        writer_proxies = WP,
+                                        nackfrag_count = C} = S) ->
+    Proxy = maps:get(WGUID, WP),
+    #change_from_writer{
+        expected_fragments = ExpFrag,
+        fragments = FragMap,
+        last_available_fragment_number = LastAvailableFragmentNumber
+    } = Change,
+    % If we never received a heartbeat, we use the expected number of fragments
+    % otherwise we use the last available fragment number
+    MaxFragNum = case LastAvailableFragmentNumber of
+        undefined -> ExpFrag;
+        LastFrag -> LastFrag
+    end,
+    % Ensure the range is valid
+    % FragmentNumberSet are limited to belong
+    % to an interval with a range no bigger than 256
+    % maximum(FragmentNumberSet) - minimum(FragmentNumberSet) < 256
+    % minimum(FragmentNumberSet) >= 1
+    Available = lists:seq(1, MaxFragNum),
+    Missing = lists:subtract(Available, maps:keys(FragMap)),
+    Rangebase = lists:min(Missing),
+    Max = lists:max(Missing),
+    RangeMax = erlang:min(Max, Rangebase + 255),
+    NackList = lists:filter(fun(N) -> N =< RangeMax end, Missing),
+    % Stored = maps:keys(FragMap),
+    % ?assert(ExpFrag - LF >= 1),
+    % MaxRange = min(ExpFrag, LF + 255),
+    Nackfrag = #nackfrag{writerGUID = WGUID,
+                         readerGUID = RGUID,
+                         sn = SN,
+                         missing_fragments = NackList,
+                         count = C},
+    Datagram = rtps_messages:build_message(RGUID#guId.prefix,
+                                         [rtps_messages:serialize_info_dst(WGUID#guId.prefix),
+                                          rtps_messages:serialize_nackfrag(Nackfrag)]),
+    [G | _] = pg:get_members(rtps_gateway),
+    U_List = Proxy#writer_proxy.unicastLocatorList,
+    FirstL = hd(U_List),
+    rtps_gateway:send(G, {Datagram, {FirstL#locator.ip, FirstL#locator.port}}),
+    S#state{nackfrag_count = C + 1}.
+
 h_receive_data({WriterID, SN, Data},
                #state{history_cache = Cache, writer_proxies = WP} = State) ->
     Proxy = maps:get(WriterID, WP),
     rtps_history_cache:add_change(Cache, data_to_cache_change({WriterID, SN, Data})),
     Change = maps:get(SN,
-                     Proxy#writer_proxy.changes,
-                    #change_from_writer{status = missing}),
+                      Proxy#writer_proxy.changes,
+                      #change_from_writer{status = missing}),
     ChangeReceived = Change#change_from_writer{status = received},
     NewChanges = maps:put(SN, ChangeReceived, Proxy#writer_proxy.changes),
     NewProxies = maps:put(WriterID, Proxy#writer_proxy{changes = NewChanges}, WP),
@@ -341,11 +410,10 @@ h_receive_gap(#gap{writerGUID = WriterID, sn_set = SET},
     NewProxy = Proxy#writer_proxy{changes = AddedAndMarked},
     State#state{writer_proxies = maps:put(WriterID, NewProxy, WP)}.
 
-
-
 store_fragments(Change, DataFrag) ->
     #change_from_writer{
         size_counter = SizeCounter,
+        last_available_fragment_number = LastFragNum,
         fragments = FragMap} = Change,
     #data_frag{
         start_num = StartNum,
@@ -374,6 +442,8 @@ store_fragments(Change, DataFrag) ->
     %  FragSize = ~p",[StartNum,SampleSize,NewSize,size(Fragments), Count, FragSize]),
     ?assert(NewSize =< SampleSize),
     Change#change_from_writer{
+        fragmented = true,
+        expected_fragments = SampleSize div FragSize + SampleSize rem FragSize,
         size_counter = NewSize,
         fragments = NewFragMap
     }.
