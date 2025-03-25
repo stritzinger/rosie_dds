@@ -18,7 +18,8 @@
     parse_param_list/1,
     serialize_data/2,
     serialize_heatbeat/1,
-    serialize_acknack/1
+    serialize_acknack/1,
+    serialize_nackfrag/1
 ]).
 
 -include("../include/rtps_structure.hrl").
@@ -435,6 +436,26 @@ calc_bitmap(Base, NumBits, Range) ->
     Bits = <<0:BITMAP_LENGTH>>,
     bit_in_map(Base, BITMAP_LENGTH, Bits, Range).
 
+serialize_nackfrag_body(#nackfrag{writerGUID =
+                                    #guId{entityId = #entityId{key = WriterID, kind = WriterKind}},
+                                readerGUID =
+                                    #guId{entityId = #entityId{key = ReaderID, kind = ReaderKind}},
+                                sn = SN,
+                                missing_fragments = Missing,
+                                count = Count}) ->
+    BitMapBase = lists:min(Missing),
+    NumBits = lists:max(Missing) - BitMapBase + 1,
+    <<ReaderID:3/binary,
+      ReaderKind:8,
+      WriterID:3/binary,
+      WriterKind:8,
+      0:32,
+      SN:32/little,
+      BitMapBase:32/little,
+      NumBits:32/little,
+      (calc_bitmap(BitMapBase, NumBits, Missing))/binary,
+      Count:32/little>>.
+
 serialize_acknack(#acknack{final_flag = FF} = A) ->
     Body = serialize_acknack_body(A),
     SubHead =
@@ -443,6 +464,13 @@ serialize_acknack(#acknack{final_flag = FF} = A) ->
                                                flags = <<0:6, FF:1, 1:1>>}),
     <<SubHead/binary, Body/binary>>.
 
+serialize_nackfrag(NackFrag) ->
+    Body = serialize_nackfrag_body(NackFrag),
+    SubHead =
+        serialize_sub_header(#subMessageHeader{kind = ?SUB_MSG_KIND_NACK_FRAG,
+                                               length = byte_size(Body),
+                                               flags = <<0:7, 1:1>>}),
+    <<SubHead/binary, Body/binary>>.
 % DATA-SCANNING |X|X|X|N|K|D|Q|E|
 % FLAGS are: N = non-standard, K = key serialized, D= data present, Q = in-line-QOS, E = little endian
 % I expect little endian
