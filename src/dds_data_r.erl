@@ -1,5 +1,8 @@
 -module(dds_data_r).
 
+-include_lib("kernel/include/logger.hrl").
+-include("../include/rtps_structure.hrl").
+
 -export([
     start_link/1,
     read/2,
@@ -15,8 +18,6 @@
 
 -behaviour(gen_server).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
-
--include("rtps_structure.hrl").
 
 -record(state,
         {topic,
@@ -89,6 +90,7 @@ handle_call(_, _, State) ->
     {reply, ok, State}.
 
 handle_cast({on_change_available, _}, #state{listener = L} = S) when L == not_set ->
+    ?LOG_WARNING("DDS reader has a change available, but listener is not set"),
     {noreply, S};
 handle_cast({on_change_available, ChangeKey},
             #state{rtps_reader = GUID, listener = {Module, Name}} = S) ->

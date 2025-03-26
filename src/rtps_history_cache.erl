@@ -1,10 +1,11 @@
 -module(rtps_history_cache).
 
--include("dds_types.hrl").
--include("rtps_structure.hrl").
+-include_lib("kernel/include/logger.hrl").
+-include("../include/dds_types.hrl").
+-include("../include/rtps_structure.hrl").
 
 -export([
-    start_link/2, 
+    start_link/2,
     set_listener/2,
     add_change/2,
     remove_change/2,
@@ -82,9 +83,9 @@ handle_cast({set_listener, L}, State) ->
 %CALL_BACK HELPERS
 h_add_change(#state{cache = C, listener = L, qos_profile = #qos_profile{history = H}} = State, Change) ->
     CacheSize = maps:size(C),
-    CacheReady = 
+    CacheReady =
     case H of
-        {?KEEP_LAST_HISTORY_QOS, Depth} when CacheSize >= Depth -> 
+        {?KEEP_LAST_HISTORY_QOS, Depth} when CacheSize >= Depth ->
             % io:format("Discarding...\n"),
             discard_samples(C, Depth, L);
         _ -> C
@@ -97,7 +98,7 @@ discard_samples(C, Depth, Listener) ->
     MaxSN = case length(SequenceNumbers) > 0 of true -> lists:max(SequenceNumbers); _ -> 0 end,
     Treshold = MaxSN - Depth,
     TO_BE_REMOVED = [ KEY || {_,SN} = KEY <- maps:keys(C), SN =< Treshold],
-    case Listener of 
+    case Listener of
         {Module, ID} -> [Module:on_change_removed(ID, K) || K <- TO_BE_REMOVED];
         _ -> ok
     end,
