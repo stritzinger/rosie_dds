@@ -413,7 +413,6 @@ h_receive_gap(#gap{writerGUID = WriterID, sn_set = SET},
 store_fragments(Change, DataFrag) ->
     #change_from_writer{
         size_counter = SizeCounter,
-        last_available_fragment_number = LastFragNum,
         fragments = FragMap} = Change,
     #data_frag{
         start_num = StartNum,
