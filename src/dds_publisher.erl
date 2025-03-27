@@ -2,12 +2,12 @@
 
 
 -export([
-    start_link/0, 
-    get_all_data_writers/1, 
-    create_datawriter/2, 
+    start_link/0,
+    get_all_data_writers/1,
+    create_datawriter/2,
     lookup_datawriter/2,
     delete_datawriter/2,
-    dispose_data_writers/1, 
+    dispose_data_writers/1,
     endpoint_has_been_acknoledged/2
 ]).
 %wait_for_acknoledgements/1]).%set_publication_subscriber/2,suspend_publications/1,resume_pubblications/1]).
@@ -18,9 +18,9 @@
 -behaviour(gen_server).
 -export([init/1, handle_call/3, handle_cast/2]).
 
--include("dds_types.hrl").
--include("rtps_structure.hrl").
--include("rtps_constants.hrl").
+-include("../include/dds_types.hrl").
+-include("../include/rtps_structure.hrl").
+-include("../include/rtps_constants.hrl").
 
 -record(state,
         {rtps_participant_info = #participant{},
@@ -147,7 +147,7 @@ handle_call({lookup_datawriter, builtin_pub_announcer}, _, State) ->
 handle_call({lookup_datawriter, Topic}, _, #state{data_writers = DW} = S) ->
     [W | _] = [ W || {W,{_,T}} <- maps:to_list(DW), T == Topic],
     {reply, W, S};
-handle_call({delete_datawriter, {_,GUID} = Writer}, _, #state{rtps_participant_info = P_info, 
+handle_call({delete_datawriter, {_,GUID} = Writer}, _, #state{rtps_participant_info = P_info,
                                                             builtin_pub_announcer = PubAnnouncer,
                                                             data_writers = DW} = S) ->
     dds_data_w:write(PubAnnouncer, produce_sedp_endpoint_leaving(P_info, GUID#guId.entityId)),
@@ -191,7 +191,7 @@ handle_cast({on_data_available, {R, ChangeKey}}, #state{data_writers = DW} = S) 
             ToBeMatched =
                 [W
                  || {W,{_,T}} <- maps:to_list(DW),
-                    (T#dds_user_topic.name == Data#sedp_disc_endpoint_data.topic_name) and 
+                    (T#dds_user_topic.name == Data#sedp_disc_endpoint_data.topic_name) and
                     (T#dds_user_topic.type_name ==  Data#sedp_disc_endpoint_data.topic_type)],
             %io:format("DDS: node willing to subscribe to topic : ~p\n", [Data#sedp_disc_endpoint_data.topic_name]),
             %io:format("DDS: i have theese topics: ~p\n", [[ T || {_,T,Pid} <- DW]]),

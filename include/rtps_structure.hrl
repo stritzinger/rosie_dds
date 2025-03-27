@@ -20,7 +20,6 @@
          expectsInlineQos = false}).
 
 -record(change_for_reader, {
-        change_key,
         status :: unsent | unacknowledged | requested | acknowledged | underway,
         is_relevant = true
 }).
@@ -78,7 +77,7 @@
          expectsInlineQos = false,
          unicastLocatorList = [],
          multicastLocatorList = [],
-         changes_for_reader = []}).
+         changes_for_reader = #{} :: #{integer() => #change_from_writer{}}}).
 -record(writer_proxy,
         {unicastLocatorList = [],
          multicastLocatorList = [],
