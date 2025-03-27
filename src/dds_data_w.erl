@@ -15,7 +15,9 @@
 -behaviour(gen_server).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
--include("rtps_structure.hrl").
+-include_lib("kernel/include/logger.hrl").
+-include("../include/rtps_structure.hrl").
+-include("../include/rtps_constants.hrl").
 
 -record(state, {topic, rtps_writer, history_cache}).
 
@@ -72,7 +74,7 @@ handle_call({is_sample_acknowledged, ChangeKey}, _, #state{rtps_writer = W} = S)
     {reply, rtps_full_writer:is_acked_by_all(W,ChangeKey), S};
 handle_call(wait_for_acknoledgements, _, #state{rtps_writer = _W} = S) ->
     % not implemented
-    io:format("DDS_DATA_W: wait_for_acknoledgements Not implemented\n"),
+    ?LOG_WARNING("DDS_DATA_W: wait_for_acknoledgements Not implemented"),
     {reply, ok, S};
 handle_call(flush_all_changes, _, #state{rtps_writer = W} = S) ->
     rtps_full_writer:flush_all_changes(W),
