@@ -35,7 +35,7 @@
          nackSuppressionDuration = 0,
          push_mode = true,
          history_cache,
-         reader_proxies = [],
+         reader_proxies = #{} :: #{#guId{} => #reader_proxy{}},
          last_sequence_number = 0}).
 
 %API
@@ -142,9 +142,9 @@ all_changes_are_acknowledged(ReaderChanges) ->
 
 send_heartbeat_to_reader(GuidPrefix,
                           HB,
-                          #reader_proxy{guid = ReaderGUID,
-                                         changes_for_reader = C4R,
-                                         unicastLocatorList = [L | _]}) ->
+                          ReaderGUID,
+                          #reader_proxy{changes_for_reader = C4R,
+                                        unicastLocatorList = [L | _]}) ->
     case all_changes_are_acknowledged(C4R) of
         true -> ok;
         false ->
@@ -173,20 +173,23 @@ send_heartbeat(#state{entity = #endPoint{guid = GUID},
                       heatbeat_count = Count,
                       reader_proxies = RP}) ->
     HB = build_heartbeat(GUID, C, Count),
-    [send_heartbeat_to_reader(GUID#guId.prefix, HB, Proxy) || Proxy <- RP].
+    maps:foreach(fun(ReaderID, Proxy) ->
+            send_heartbeat_to_reader(GUID#guId.prefix, HB, ReaderID, Proxy)
+        end,
+        RP).
 
 heartbeat_loop(#state{heatbeat_period = HP, heatbeat_count = C} = S) ->
     send_heartbeat(S),
     erlang:send_after(HP, self(), heartbeat_loop),
     S#state{heatbeat_count = C + 1}.
 
-send_selected_changes([], _, _, #reader_proxy{changes_for_reader = CR}) ->
+send_selected_changes([], _, _, _,#reader_proxy{changes_for_reader = CR}) ->
     CR;
 send_selected_changes(RequestedSN,
                       Guid,
                       HC,
-                      #reader_proxy{guid = #guId{entityId = RID},
-                                    unicastLocatorList = [L | _],
+                      #guId{entityId = RID},
+                      #reader_proxy{unicastLocatorList = [L | _],
                                     changes_for_reader = CR}) ->
     ToSend = [rtps_history_cache:get_change(HC, {Guid, SN}) || SN <- RequestedSN],
     ValidToSend = [C || C <- ToSend, C /= not_found],
@@ -208,23 +211,14 @@ send_selected_changes(RequestedSN,
             end,
             CR).
 
-rec_send_changes(_, _, _, [], Sent) ->
-    Sent;
-rec_send_changes(Filter,
-             Guid,
-             HC,
-             [#reader_proxy{guid = #guId{entityId = _RID},
-                            unicastLocatorList = [_L | _],
-                            changes_for_reader = CR} =
-                  P
-              | TL],
-             Sent) ->
-    RequestedKeys = [K || {K, #change_for_reader{status = S}} <- maps:to_list(CR), S == Filter],
-    NewCR = send_selected_changes(RequestedKeys, Guid, HC, P),
-    rec_send_changes(Filter, Guid, HC, TL, [P#reader_proxy{changes_for_reader = NewCR} | Sent]).
-
 send_changes(Filter, Guid, HC, RP) ->
-    rec_send_changes(Filter, Guid, HC, RP, []).
+    maps:map(fun
+        (ReaderID, #reader_proxy{changes_for_reader = CR} = P) ->
+            RequestedKeys = [K || {K, #change_for_reader{status = S}} <- maps:to_list(CR), S == Filter],
+            NewCR = send_selected_changes(RequestedKeys, Guid, HC, ReaderID, P),
+            P#reader_proxy{changes_for_reader = NewCR}
+        end,
+        RP).
 
 write_loop(#state{entity = #endPoint{guid = Guid},
                   history_cache = HC,
@@ -257,47 +251,54 @@ h_new_change(D,
                      data = D},
     {Change, S#state{last_sequence_number = SN}}.
 
-h_update_matched_readers(Proxies, #state{reader_proxies = RP, history_cache = C} = S) ->
-    Valid_GUIDS = [G || #reader_proxy{guid = G} <- Proxies],
-    ProxyStillValid =
-        [Proxy || #reader_proxy{guid = G} = Proxy <- RP, lists:member(G, Valid_GUIDS)],
-    NewProxies =
-        [Proxy
-         || #reader_proxy{guid = GUID} = Proxy <- Proxies,
-            not lists:member(GUID, [G || #reader_proxy{guid = G} <- RP])],
-    % add cache changes to the unsent list for the new added locators
+h_update_matched_readers(ProxyToMatch, #state{reader_proxies = RP, history_cache = C} = S) ->
+    Current_GUIDS = maps:keys(RP),
+    Valid_GUIDS = maps:keys(ProxyToMatch),
+    KeyToRemove = Current_GUIDS -- Valid_GUIDS,
+    ProxiesToKeep = lists:foldl(fun(GUID, Acc) ->
+            maps:remove(GUID, Acc)
+        end,
+        RP,
+        KeyToRemove),
+    NewProxies = lists:foldl(fun(GUID, Acc) ->
+            maps:remove(GUID, Acc)
+        end,
+        ProxyToMatch,
+        Current_GUIDS),
     Changes = rtps_history_cache:get_all_changes(C),
-    S#state{reader_proxies = ProxyStillValid ++ reset_reader_proxies(Changes, NewProxies)}.
+    % add cache changes to the unsent list for the new added locators
+    NewProxiesReady = maps:map(
+        fun(_, Proxy) ->
+                setup_reader_proxy(Changes, Proxy)
+        end,
+        NewProxies),
+    S#state{reader_proxies = maps:merge(ProxiesToKeep, NewProxiesReady)}.
 
-h_matched_reader_add(Proxy,
-                     #state{entity = #endPoint{guid = GUID},
+h_matched_reader_add({ReaderGUID, Proxy},
+                     #state{entity = #endPoint{guid = WriterGUID},
                             reader_proxies = RP,
                             history_cache = C,
                             heatbeat_count = Count} =
                          S) ->
     Changes = rtps_history_cache:get_all_changes(C),
-    NewProxies = reset_reader_proxies(Changes, [Proxy]),
-    HB = build_heartbeat(GUID, C, Count),
-    [send_heartbeat_to_reader(GUID#guId.prefix, HB, P) || P <- NewProxies],
-    S#state{reader_proxies = RP ++ NewProxies, heatbeat_count = Count + 1}.
+    NewProxy = setup_reader_proxy(Changes, Proxy),
+    HB = build_heartbeat(WriterGUID, C, Count),
+    send_heartbeat_to_reader(WriterGUID#guId.prefix, HB, ReaderGUID, NewProxy),
+    S#state{
+        reader_proxies = RP#{ReaderGUID => NewProxy},
+        heatbeat_count = Count + 1}.
 
 h_matched_reader_remove(Guid, #state{reader_proxies = RP} = S) ->
-    S#state{reader_proxies = [P || #reader_proxy{guid = G} = P <- RP, G /= Guid]}.
+    S#state{reader_proxies = maps:remove(Guid, RP)}.
 
-reset_reader_proxies(Changes, RP) ->
-    rec_reset_reader_proxies(Changes, RP, []).
-
-rec_reset_reader_proxies(_, [], NewRP) ->
-    NewRP;
-rec_reset_reader_proxies(Changes, [RP | TL], NewProxies) ->
+setup_reader_proxy(Changes, Proxy) ->
     ChangesForReaders = lists:foldl(
         fun(#cacheChange{sequenceNumber = SN}, Acc) ->
             maps:put(SN, #change_for_reader{status = unacknowledged}, Acc)
         end,
         #{},
         Changes),
-    N_RP = RP#reader_proxy{changes_for_reader = ChangesForReaders},
-    rec_reset_reader_proxies(Changes, TL, [N_RP | NewProxies]).
+    Proxy#reader_proxy{changes_for_reader = ChangesForReaders}.
 
 is_acked_by_reader(SN, #reader_proxy{changes_for_reader = Changes}) ->
     %[ io:format("~p with key = ~p\n",[S,Key]) || #change_for_reader{change_key=Key, status = S}=C <- Changes],
@@ -310,19 +311,18 @@ h_is_acked_by_all(ChangeKey, #state{reader_proxies = RP}) ->
     lists:all(fun(Proxy) -> is_acked_by_reader(ChangeKey,Proxy) end, RP).
 
 add_change_to_proxies(SN, Proxies, Push) ->
-    rec_add_change_to_proxies(SN, Proxies, [], Push).
+    maps:map(fun(_, Proxy) ->
+        add_change_to_proxy(SN, Proxy, Push)
+    end, Proxies).
 
-rec_add_change_to_proxies(_, [], NewPR, _) ->
-    NewPR;
-rec_add_change_to_proxies(SN, [Proxy | TL], NewProxies, Push) ->
+add_change_to_proxy(SN, Proxy, Push) ->
     Status = case Push of
         true -> unsent;
         false -> unacknowledged
     end,
     ReaderChange = #change_for_reader{status = Status},
     ChangeMap = (Proxy#reader_proxy.changes_for_reader)#{SN => ReaderChange},
-    New_PR = Proxy#reader_proxy{changes_for_reader = ChangeMap},
-    rec_add_change_to_proxies(SN, TL, [New_PR | NewProxies], Push).
+    Proxy#reader_proxy{changes_for_reader = ChangeMap}.
 
 h_on_change_available({_, SN},
                       #state{entity = #endPoint{guid = Guid},
@@ -335,23 +335,21 @@ h_on_change_available({_, SN},
     ProxiesPushed = send_changes(unsent, Guid, HC, ReaderProxies),
     S#state{reader_proxies = ProxiesPushed}.
 
-rm_change_from_proxies(Key, Proxies) ->
-    rec_rm_change_from_proxies(Key, Proxies, []).
+rm_change_from_proxies(SN, Proxies) ->
+    maps:map(fun(_, Proxy) ->
+        rm_change_from_proxy(SN, Proxy)
+    end, Proxies).
 
-rec_rm_change_from_proxies(_, [], NewPR) ->
-    NewPR;
-rec_rm_change_from_proxies(SN, [Proxy | TL], NewProxies) ->
+rm_change_from_proxy(SN, Proxy) ->
     NewChangeList = maps:remove(SN, Proxy#reader_proxy.changes_for_reader),
-    New_PR = Proxy#reader_proxy{changes_for_reader = NewChangeList},
-    rec_rm_change_from_proxies(SN, TL, [New_PR | NewProxies]).
+    Proxy#reader_proxy{changes_for_reader = NewChangeList}.
 
 h_on_change_removed(Key, #state{history_cache = _C, reader_proxies = RP} = S) ->
     S#state{reader_proxies = rm_change_from_proxies(Key, RP)}.
 
-update_for_acknack([], _, _, _, S) ->
-    S;
-update_for_acknack([#reader_proxy{ready = IsReady, changes_for_reader = Changes} = Proxy | _],
-                   Others, Missed, FinalFlag, S) ->
+update_for_acknack(RGUID, Missed, FinalFlag, #state{reader_proxies = RP} = S) ->
+    #reader_proxy{ready = IsReady,
+                  changes_for_reader = Changes} = Proxy = maps:get(RGUID, RP),
     NewChangeMap =
         maps:map(fun(SN, C) ->
                     case lists:member(SN, Missed) of
@@ -374,23 +372,20 @@ update_for_acknack([#reader_proxy{ready = IsReady, changes_for_reader = Changes}
                 Changes),
     % a remote reader is considered ready to receive only after it sent an acknack with a final flag
     Readiness = not IsReady and (FinalFlag == 1),
-    S#state{reader_proxies =
-                [Proxy#reader_proxy{ready = Readiness, changes_for_reader = NewChangeMap} | Others]}.
+    NewProxy = Proxy#reader_proxy{ready = Readiness,
+                                  changes_for_reader = NewChangeMap},
+    S#state{reader_proxies = maps:put(RGUID, NewProxy, RP)}.
 
-h_receive_acknack(_, #state{reader_proxies = []} = S) ->
-    S;
-h_receive_acknack(#acknack{readerGUID = RID, final_flag = FF, sn_range = Single},
-                  #state{reader_proxies = RP, history_cache = _Cache} = S)
-    when is_integer(Single) ->
-    Others = [P || #reader_proxy{guid = G} = P <- RP, G /= RID],
-    update_for_acknack([P || #reader_proxy{guid = G} = P <- RP, G == RID], Others, [Single], FF, S);
-h_receive_acknack(#acknack{readerGUID = RID, final_flag = FF, sn_range = Range},
-                  #state{reader_proxies = RP, history_cache = _Cache} = S) ->
-    Others = [P || #reader_proxy{guid = G} = P <- RP, G /= RID],
-    update_for_acknack([P || #reader_proxy{guid = G} = P <- RP, G == RID], Others, Range, FF, S).
+h_receive_acknack(#acknack{readerGUID = RGUID, final_flag = FF, sn_range = SNRange},
+                  #state{reader_proxies = RP} = S) ->
+    Range = case is_integer(SNRange) of true -> [SNRange]; false -> SNRange end,
+    case maps:is_key(RGUID, RP) of
+        true -> update_for_acknack(RGUID, Range, FF, S);
+        false -> S
+    end.
 
 h_flush_all_changes(#state{entity = #endPoint{guid = #guId{prefix = Prefix}},
-                           history_cache = HC,
-                           datawrite_period = _P,
-                           reader_proxies = RP}) ->
-    send_changes(unsent, Prefix, HC, RP).
+                       history_cache = HC,
+                       datawrite_period = _P,
+                       reader_proxies = RP}) ->
+send_changes(unsent, Prefix, HC, RP).

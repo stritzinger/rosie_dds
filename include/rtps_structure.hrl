@@ -72,8 +72,7 @@
          missing_fragments,
          count}).
 -record(reader_proxy,
-        {guid,
-         ready= false,
+        {ready= false,
          expectsInlineQos = false,
          unicastLocatorList = [],
          multicastLocatorList = [],

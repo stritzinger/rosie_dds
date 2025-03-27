@@ -68,7 +68,8 @@ init({Topic, #participant{guid = _ID}, GUID}) ->
             history_cache = {cache_of, GUID}}}.
 
 handle_call(get_matched_subscriptions, _, #state{rtps_writer = W} = S) ->
-    Matched = [ P#reader_proxy.guid || #reader_proxy{ready=Ready}=P <- rtps_full_writer:get_matched_readers(W), Ready],
+    Matched = maps:filter(fun(_, #reader_proxy{ready=Ready}) -> Ready end,
+                          rtps_full_writer:get_matched_readers(W)),
     {reply, Matched, S};
 handle_call({is_sample_acknowledged, ChangeKey}, _, #state{rtps_writer = W} = S) ->
     {reply, rtps_full_writer:is_acked_by_all(W,ChangeKey), S};

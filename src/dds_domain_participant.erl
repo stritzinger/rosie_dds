@@ -7,8 +7,9 @@
          get_discovered_participants/1]).%,create_publisher/2,create_subscriber/2]).
 -export([init/1, terminate/2, handle_call/3, handle_cast/2, handle_info/2]).
 
--include("rtps_structure.hrl").
--include("rtps_constants.hrl").
+-include_lib("kernel/include/logger.hrl").
+-include_lib("../include/rtps_structure.hrl").
+-include_lib("../include/rtps_constants.hrl").
 
 -record(state,
         {supervisor,
@@ -101,32 +102,30 @@ h_update_participants_list(PL,
     Sub_Detectors =
         filter_participants_with(PL, ?DISC_BUILTIN_ENDPOINT_SUBSCRIPTIONS_DETECTOR),
     MatchedReaders =
-        [#reader_proxy{guid =
-                           #guId{prefix = P,
-                                 entityId = ?ENTITYID_SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR},
-                       unicastLocatorList = U,
-                       multicastLocatorList = M}
+        [{#guId{prefix = P,
+                entityId = ?ENTITYID_SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR},
+          #reader_proxy{unicastLocatorList = U,
+                       multicastLocatorList = M}}
          || #spdp_disc_part_data{guidPrefix = P,
                                  meta_uni_locator_l = U,
                                  meta_multi_locator_l = M}
                 <- Sub_Detectors],
     DW = dds_publisher:lookup_datawriter(dds_default_publisher, builtin_sub_announcer),
-    dds_data_w:match_remote_readers(DW, MatchedReaders),
+    dds_data_w:match_remote_readers(DW, maps:from_list(MatchedReaders)),
 
     Pub_Detectors =
         filter_participants_with(PL, ?DISC_BUILTIN_ENDPOINT_PUBLICATIONS_DETECTOR),
     MatchedReaders_2 =
-        [#reader_proxy{guid =
-                           #guId{prefix = P,
-                                 entityId = ?ENTITYID_SEDP_BUILTIN_PUBLICATIONS_DETECTOR},
-                       unicastLocatorList = U,
-                       multicastLocatorList = M}
+        [{#guId{prefix = P,
+                entityId = ?ENTITYID_SEDP_BUILTIN_PUBLICATIONS_DETECTOR},
+          #reader_proxy{unicastLocatorList = U,
+                        multicastLocatorList = M}}
          || #spdp_disc_part_data{guidPrefix = P,
                                  meta_uni_locator_l = U,
                                  meta_multi_locator_l = M}
                 <- Pub_Detectors],
     DW2 = dds_publisher:lookup_datawriter(dds_default_publisher, builtin_pub_announcer),
-    dds_data_w:match_remote_readers(DW2, MatchedReaders_2),
+    dds_data_w:match_remote_readers(DW2, maps:from_list(MatchedReaders_2)),
 
     Pub_Annoucers =
         filter_participants_with(PL, ?DISC_BUILTIN_ENDPOINT_PUBLICATIONS_ANNOUNCER),
