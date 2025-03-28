@@ -31,8 +31,8 @@
         fragmented = false        :: boolean(),
         last_available_fragment_number  :: undefined | integer(),
         size_counter = 0          :: integer(), % size of received fragments
-        expected_fragments        :: integer(), % expected number of fragments
-        fragments = #{}           :: map() % used if is fragmented
+        expected_fragments        :: integer()  % expected number of fragments
+        % fragments are stored in the history cache
 }).
 
 -record(data_frag, {

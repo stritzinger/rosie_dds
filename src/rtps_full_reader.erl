@@ -309,14 +309,19 @@ send_acknack(WGUID,
     S#state{acknack_count = C + 1}.
 
 send_nackfrag(WGUID, {SN, Change}, #state{entity = #endPoint{guid = RGUID},
-                                        writer_proxies = WP,
-                                        nackfrag_count = C} = S) ->
+                                          history_cache = Cache,
+                                          writer_proxies = WP,
+                                          nackfrag_count = C} = S) ->
     Proxy = maps:get(WGUID, WP),
     #change_from_writer{
         expected_fragments = ExpFrag,
-        fragments = FragMap,
         last_available_fragment_number = LastAvailableFragmentNumber
     } = Change,
+    FragMap = case rtps_history_cache:get_change(Cache, {WGUID, SN}) of
+        not_found -> #{};
+        Map when is_map(Map) -> Map;
+        F -> error({invalid_fragment_map, F})
+    end,
     % If we never received a heartbeat, we use the expected number of fragments
     % otherwise we use the last available fragment number
     MaxFragNum = case LastAvailableFragmentNumber of
@@ -368,23 +373,33 @@ h_receive_data_frag(
             #state{history_cache = Cache, writer_proxies = WP} = State) ->
     Proxy = maps:get(WriterID, WP),
     #writer_proxy{changes = Changes} = Proxy,
-    Change = maps:get(SN,
-                      Changes,
-                      #change_from_writer{fragmented = true,
-                                          status = missing}),
-    NewChange =
-        case store_fragments(Change, DataFrag) of
-            C when C#change_from_writer.size_counter == SampleSize ->
-                ?LOG_NOTICE("Received all fragments"),
-                {DataSample, NewRec} = rebuild_sample(SampleSize, C),
-                store_sample(Cache, WriterID, SN, DataSample),
-                NewRec;
-            C -> C
-        end,
-    NewProxy = Proxy#writer_proxy{
-        changes = maps:put(SN, NewChange, Changes)
-    },
-    State#state{writer_proxies = maps:put(WriterID, NewProxy, WP)}.
+    ChangeFromWriter = maps:get(SN, Changes,
+                                #change_from_writer{fragmented = true,
+                                                    status = missing}),
+    CachedChange =
+        case rtps_history_cache:get_change(Cache, {WriterID, SN}) of
+        not_found -> #{};
+        Change -> Change
+    end,
+    case is_map(CachedChange) of
+        true ->
+            NewChange =
+            case store_fragments(Cache, WriterID, SN, ChangeFromWriter, CachedChange, DataFrag) of
+                C when C#change_from_writer.size_counter == SampleSize ->
+                    ?LOG_NOTICE("Received all fragments"),
+                    {DataSample, NewRec} = rebuild_sample(Cache, WriterID, SN, SampleSize, C),
+                    store_sample(Cache, WriterID, SN, DataSample),
+                    NewRec;
+                C -> C
+            end,
+            NewProxy = Proxy#writer_proxy{
+                changes = maps:put(SN, NewChange, Changes)
+            },
+            State#state{writer_proxies = maps:put(WriterID, NewProxy, WP)};
+        false ->
+            State
+    end.
+
 
 h_receive_gap(#gap{writerGUID = WriterID, sn_set = SET},
                #state{history_cache = _Cache, writer_proxies = WP} = State) ->
@@ -410,10 +425,8 @@ h_receive_gap(#gap{writerGUID = WriterID, sn_set = SET},
     NewProxy = Proxy#writer_proxy{changes = AddedAndMarked},
     State#state{writer_proxies = maps:put(WriterID, NewProxy, WP)}.
 
-store_fragments(Change, DataFrag) ->
-    #change_from_writer{
-        size_counter = SizeCounter,
-        fragments = FragMap} = Change,
+store_fragments(Cache, WriterID, SN, ChangeFromWriter, CachedChange, DataFrag) ->
+    #change_from_writer{size_counter = SizeCounter} = ChangeFromWriter,
     #data_frag{
         start_num = StartNum,
         count = Count,
@@ -423,9 +436,10 @@ store_fragments(Change, DataFrag) ->
      } = DataFrag,
     NumberedFrags = lists:zip(lists:seq(StartNum, StartNum + Count - 1),
                               split_fragments(Count, FragSize, Fragments)),
-    FragsToStore = lists:filter(fun({N,_}) -> not maps:is_key(N, FragMap) end,
+
+    FragsToStore = lists:filter(fun({N,_}) -> not maps:is_key(N, CachedChange) end,
                                 NumberedFrags),
-    NewFragMap = maps:merge(FragMap, maps:from_list(FragsToStore)),
+    rtps_history_cache:add_fragments(Cache, {WriterID, SN}, maps:from_list(FragsToStore)),
     StoredSize = lists:foldl(fun
                 ({_, B}, Size) -> Size + size(B)
             end,
@@ -440,11 +454,10 @@ store_fragments(Change, DataFrag) ->
     %  FragsInSubMsg = ~p,
     %  FragSize = ~p",[StartNum,SampleSize,NewSize,size(Fragments), Count, FragSize]),
     ?assert(NewSize =< SampleSize),
-    Change#change_from_writer{
+    ChangeFromWriter#change_from_writer{
         fragmented = true,
         expected_fragments = SampleSize div FragSize + SampleSize rem FragSize,
-        size_counter = NewSize,
-        fragments = NewFragMap
+        size_counter = NewSize
     }.
 
 split_fragments(Count, Size, Payload) ->
@@ -456,10 +469,9 @@ rec_split_fragments(Count, Size, Payload, Fragments) ->
     <<Frag:Size/binary, Rest/binary>> = Payload,
     rec_split_fragments(Count - 1, Size, Rest, [Frag|Fragments]).
 
-rebuild_sample(SampleSize,
-               #change_from_writer{
-                    fragmented = true,
-                    fragments = Fragments} = Change) ->
+rebuild_sample(Cache, WriterID, SN, SampleSize,
+               #change_from_writer{fragmented = true} = ChangeFromWriter) ->
+    Fragments = rtps_history_cache:get_change(Cache, {WriterID, SN}),
     <<EncapsulationKind:16,
       _:16, % unused encapsulationoptions
       SerializedPayload/binary>> = list_to_binary(
@@ -468,11 +480,10 @@ rebuild_sample(SampleSize,
     <<CDR_LE:16>> = ?CDR_LE,
     ?assertMatch(CDR_LE, EncapsulationKind),
     ?assert(size(SerializedPayload) == SampleSize - 4),
-    NewRecord = Change#change_from_writer{
+    NewRecord = ChangeFromWriter#change_from_writer{
         status = received,
         fragmented = false,
-        size_counter = 0,
-        fragments = #{}},
+        size_counter = 0},
     {SerializedPayload, NewRecord}.
 
 store_sample(Cache, WriterID, SN, Data) ->

@@ -1,6 +1,7 @@
 -module(rtps_history_cache).
 
 -include_lib("kernel/include/logger.hrl").
+-include_lib("stdlib/include/assert.hrl").
 -include("../include/dds_types.hrl").
 -include("../include/rtps_structure.hrl").
 
@@ -8,6 +9,7 @@
     start_link/2,
     set_listener/2,
     add_change/2,
+    add_fragments/3,
     remove_change/2,
     get_change/2,
     get_all_changes/1,
@@ -18,7 +20,18 @@
 -behaviour(gen_server).
 -export([init/1, handle_call/3, handle_cast/2]).
 
--record(state, {listener, cache = #{}, qos_profile}).
+-type writer_id() :: #guId{}.
+-type change_key() :: {writer_id(), integer()}.
+
+-record(state, {
+    listener,
+    % cache is a map of change_key()
+    % to either a Binary data sample
+    % or a map of data sample fragments
+    cache = #{} :: #{
+        change_key() => binary() | #{integer() => binary()}
+    },
+    qos_profile}).
 
 % API
 
@@ -32,6 +45,10 @@ set_listener(Name, L) ->
 add_change(Name, Change) ->
     [Pid | _] = pg:get_members(Name),
     gen_server:call(Pid, {add_change, Change}).
+
+add_fragments(Name, ChangeKey, Fragments) ->
+    [Pid | _] = pg:get_members(Name),
+    gen_server:call(Pid, {add_fragments, ChangeKey, Fragments}).
 
 remove_change(Name, {WriterGuid, SequenceNumber}) ->
     [Pid | _] = pg:get_members(Name),
@@ -71,6 +88,8 @@ handle_call({add_change, Change}, _, #state{listener = {Module, ID}} = S) ->
     Module:on_change_available(ID,
                                {Change#cacheChange.writerGuid, Change#cacheChange.sequenceNumber}),
     {reply, ok, h_add_change(S, Change)};
+handle_call({add_fragments, ChangeKey, Fragments}, _, S) ->
+    {reply, ok, h_add_fragments(ChangeKey, Fragments, S)};
 handle_call({remove_change, WriterGuid, SequenceNumber}, _, State) ->
     {reply, ok, h_remove_change(State, WriterGuid, SequenceNumber)};
 handle_call(get_all_changes, _, State) ->
@@ -92,6 +111,11 @@ h_add_change(#state{cache = C, listener = L, qos_profile = #qos_profile{history 
     end,
     State#state{cache = CacheReady#{{Change#cacheChange.writerGuid, Change#cacheChange.sequenceNumber} =>
                            Change }}.
+
+h_add_fragments(ChangeKey, NewFragments, #state{cache = C} = S) ->
+    Fragments = maps:get(ChangeKey, C, #{}),
+    ?assert(is_map(Fragments)),
+    S#state{cache = C#{ChangeKey => maps:merge(Fragments, NewFragments)}}.
 
 discard_samples(C, Depth, Listener) ->
     SequenceNumbers = [ SN || {_,SN} <- maps:keys(C)],
@@ -140,7 +164,7 @@ h_get_max_seq_num(#state{cache = C}) ->
 
 -include_lib("eunit/include/eunit.hrl").
 
--include("rtps_constants.hrl").
+-include("../include/rtps_constants.hrl").
 
 history_cache_test() ->
     pg:start_link(),
