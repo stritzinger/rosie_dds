@@ -317,9 +317,10 @@ send_nackfrag(WGUID, {SN, Change}, #state{entity = #endPoint{guid = RGUID},
         expected_fragments = ExpFrag,
         last_available_fragment_number = LastAvailableFragmentNumber
     } = Change,
-    FragMap = case rtps_history_cache:get_change(Cache, {WGUID, SN}) of
+    CacheChange = rtps_history_cache:get_change(Cache, {WGUID, SN}),
+    FragMap = case CacheChange of
         not_found -> #{};
-        Map when is_map(Map) -> Map;
+        #cacheChange{data = Data} when is_map(Data) -> Data;
         F -> error({invalid_fragment_map, F})
     end,
     % If we never received a heartbeat, we use the expected number of fragments
@@ -376,15 +377,15 @@ h_receive_data_frag(
     ChangeFromWriter = maps:get(SN, Changes,
                                 #change_from_writer{fragmented = true,
                                                     status = missing}),
-    CachedChange =
+    CurrentData =
         case rtps_history_cache:get_change(Cache, {WriterID, SN}) of
         not_found -> #{};
-        Change -> Change
+        Change -> Change#cacheChange.data
     end,
-    case is_map(CachedChange) of
+    case is_map(CurrentData) of
         true ->
             NewChange =
-            case store_fragments(Cache, WriterID, SN, ChangeFromWriter, CachedChange, DataFrag) of
+            case store_fragments(Cache, WriterID, SN, ChangeFromWriter, CurrentData, DataFrag) of
                 C when C#change_from_writer.size_counter == SampleSize ->
                     ?LOG_NOTICE("Received all fragments"),
                     {DataSample, NewRec} = rebuild_sample(Cache, WriterID, SN, SampleSize, C),
@@ -425,7 +426,7 @@ h_receive_gap(#gap{writerGUID = WriterID, sn_set = SET},
     NewProxy = Proxy#writer_proxy{changes = AddedAndMarked},
     State#state{writer_proxies = maps:put(WriterID, NewProxy, WP)}.
 
-store_fragments(Cache, WriterID, SN, ChangeFromWriter, CachedChange, DataFrag) ->
+store_fragments(Cache, WriterID, SN, ChangeFromWriter, CurrentData, DataFrag) ->
     #change_from_writer{size_counter = SizeCounter} = ChangeFromWriter,
     #data_frag{
         start_num = StartNum,
@@ -437,9 +438,10 @@ store_fragments(Cache, WriterID, SN, ChangeFromWriter, CachedChange, DataFrag) -
     NumberedFrags = lists:zip(lists:seq(StartNum, StartNum + Count - 1),
                               split_fragments(Count, FragSize, Fragments)),
 
-    FragsToStore = lists:filter(fun({N,_}) -> not maps:is_key(N, CachedChange) end,
+    FragsToStore = lists:filter(fun({N,_}) -> not maps:is_key(N, CurrentData) end,
                                 NumberedFrags),
-    rtps_history_cache:add_fragments(Cache, {WriterID, SN}, maps:from_list(FragsToStore)),
+    NewFragsMap = maps:from_list(FragsToStore),
+    rtps_history_cache:add_fragments(Cache, {WriterID, SN}, NewFragsMap),
     StoredSize = lists:foldl(fun
                 ({_, B}, Size) -> Size + size(B)
             end,
@@ -471,11 +473,12 @@ rec_split_fragments(Count, Size, Payload, Fragments) ->
 
 rebuild_sample(Cache, WriterID, SN, SampleSize,
                #change_from_writer{fragmented = true} = ChangeFromWriter) ->
-    Fragments = rtps_history_cache:get_change(Cache, {WriterID, SN}),
+    Change = rtps_history_cache:get_change(Cache, {WriterID, SN}),
+    Data = Change#cacheChange.data,
     <<EncapsulationKind:16,
       _:16, % unused encapsulationoptions
       SerializedPayload/binary>> = list_to_binary(
-        [B || {_, B} <- lists:sort(maps:to_list(Fragments))]
+        [B || {_, B} <- lists:sort(maps:to_list(Data))]
     ),
     <<CDR_LE:16>> = ?CDR_LE,
     ?assertMatch(CDR_LE, EncapsulationKind),
