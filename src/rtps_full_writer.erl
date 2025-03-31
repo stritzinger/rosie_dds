@@ -25,6 +25,8 @@
 -define(DEFAULT_HEARTBEAT_PERIOD, 1000).
 -define(DEFAULT_NACK_RESPONCE_DELAY, 200).
 
+-define(DATA_SUBMSG_OVERHEAD, 28).
+
 -record(state,
         {participant = #participant{},
          entity = #endPoint{},
@@ -183,33 +185,57 @@ heartbeat_loop(#state{heatbeat_period = HP, heatbeat_count = C} = S) ->
     erlang:send_after(HP, self(), heartbeat_loop),
     S#state{heatbeat_count = C + 1}.
 
-send_selected_changes([], _, _, _,#reader_proxy{changes_for_reader = CR}) ->
-    CR;
+send_selected_changes([], _, _, _,#reader_proxy{changes_for_reader = CR}) -> CR;
 send_selected_changes(RequestedSN,
                       Guid,
                       HC,
                       #guId{entityId = RID},
                       #reader_proxy{unicastLocatorList = [L | _],
-                                    changes_for_reader = CR}) ->
-    ToSend = [rtps_history_cache:get_change(HC, {Guid, SN}) || SN <- RequestedSN],
-    ValidToSend = [C || C <- ToSend, C /= not_found],
-    [G | _] = pg:get_members(rtps_gateway),
-    SUB_MSG =
-        [rtps_messages:serialize_info_timestamp()]
-        ++ [rtps_messages:serialize_data(RID, C) || C <- ValidToSend],
-    Msg = rtps_messages:build_message(Guid#guId.prefix, SUB_MSG),
-    rtps_gateway:send(G, {Msg, {L#locator.ip, L#locator.port}}),
+                                    changes_for_reader = C4R}) ->
+    ToSend = [{SN, rtps_history_cache:get_change(HC, {Guid, SN})} || SN <- RequestedSN],
+    ValidToSend = [{SN,C} || {SN,C} <- ToSend, C /= not_found],
 
-    % mark all sent requests as "unacknowledged" (skipping the "UNDERWAY" status) just for simplicity
-    maps:map(fun(Key, Change) ->
-                case lists:member(Key, RequestedSN) of
-                    true ->
-                        Change#change_for_reader{status = unacknowledged};
-                    false ->
-                        Change
-                end
-            end,
-            CR).
+
+
+    {RTPSMessage, NewC4R} = build_rtps_message(Guid, ValidToSend, C4R, RID),
+    [G | _] = pg:get_members(rtps_gateway),
+    rtps_gateway:send(G, {RTPSMessage, {L#locator.ip, L#locator.port}}),
+    NewC4R.
+    % % mark all sent requests as "unacknowledged" (skipping the "UNDERWAY" status) just for simplicity
+    % maps:map(fun(Key, Change) ->
+    %             case lists:member(Key, RequestedSN) of
+    %                 true ->
+    %                     Change#change_for_reader{status = unacknowledged};
+    %                 false ->
+    %                     Change
+    %             end
+    %         end,
+    %         CR).
+    %
+
+build_rtps_message(Guid, ValidToSend, ChangesFroReader, ReaderEntityID) ->
+    MTU = rtps_network_utils:get_mtu(),
+    RTPSHeader = rtps_messages:header(Guid#guId.prefix),
+    InfoTimestamp = rtps_messages:serialize_info_timestamp(),
+    BaseMessage = <<RTPSHeader/binary, InfoTimestamp/binary>>,
+    lists:foldl(fun(C, Acc) ->
+                    build_submessage(C, Acc, MTU, ReaderEntityID)
+                end,
+                {BaseMessage, ChangesFroReader},
+                ValidToSend).
+build_submessage({SN, #cacheChange{data = Data} = CC}, {BinAcc, C4R}, MTU, RID)
+    when is_record(Data, sedp_disc_endpoint_data)
+        orelse
+        (is_binary(Data) andalso (size(BinAcc) + size(Data) + ?DATA_SUBMSG_OVERHEAD) =< MTU)
+->
+    % We can normally serialize the DATA_SUBMESSAGE
+    Change4R = maps:get(SN, C4R),
+    SubMsg = rtps_messages:serialize_data(RID, CC),
+    NewBin = <<BinAcc/binary, SubMsg/binary>>,
+    % mark all sent requests as "unacknowledged"
+    % (skipping the "UNDERWAY" status) just for simplicity
+    NewC4R = maps:put(SN, Change4R#change_for_reader{status = unacknowledged}, C4R),
+    {NewBin, NewC4R}.
 
 send_changes(Filter, Guid, HC, RP) ->
     maps:map(fun
