@@ -3,7 +3,8 @@
 -export([
     wait_dhcp/1,
     get_local_ip/0,
-    reuseaddr_port_opts/0
+    reuseaddr_port_opts/0,
+    get_mtu/0
 ]).
 
 % API -----------------------------------------------------------------
@@ -71,3 +72,6 @@ get_ip_of_valid_interfaces(CanUseLoopback) ->
         _ when CanUseLoopback == no_loopback -> get_ip_of_valid_interfaces(allow_looback);
         _ -> undefined
     end.
+
+% TODO This should fetch what is available from the OS
+get_mtu() -> 1500.
