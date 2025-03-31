@@ -29,7 +29,7 @@
     % to either a Binary data sample
     % or a map of data sample fragments
     cache = #{} :: #{
-        change_key() => binary() | #{integer() => binary()}
+        change_key() => #cacheChange{}
     },
     qos_profile}).
 
@@ -109,13 +109,21 @@ h_add_change(#state{cache = C, listener = L, qos_profile = #qos_profile{history 
             discard_samples(C, Depth, L);
         _ -> C
     end,
-    State#state{cache = CacheReady#{{Change#cacheChange.writerGuid, Change#cacheChange.sequenceNumber} =>
-                           Change }}.
+    Change2 = Change,
+    ChangeKey = {Change#cacheChange.writerGuid,
+                 Change#cacheChange.sequenceNumber},
+    State#state{cache = CacheReady#{ChangeKey => Change2}}.
 
-h_add_fragments(ChangeKey, NewFragments, #state{cache = C} = S) ->
-    Fragments = maps:get(ChangeKey, C, #{}),
+h_add_fragments({WriterID, SN} = ChangeKey, NewFragments, #state{cache = C} = S) ->
+    Change = maps:get(ChangeKey, C, #cacheChange{kind = alive,
+                                                 writerGuid = WriterID,
+                                                 instanceHandle = 0,
+                                                 sequenceNumber = SN,
+                                                 data = #{}}),
+    Fragments = Change#cacheChange.data,
     ?assert(is_map(Fragments)),
-    S#state{cache = C#{ChangeKey => maps:merge(Fragments, NewFragments)}}.
+    NewChange = Change#cacheChange{data = maps:merge(Fragments, NewFragments)},
+    S#state{cache = C#{ChangeKey => NewChange}}.
 
 discard_samples(C, Depth, Listener) ->
     SequenceNumbers = [ SN || {_,SN} <- maps:keys(C)],
