@@ -8,7 +8,12 @@
 -record(version, {major, minor}).
 -record(guId, {prefix, entityId = #entityId{}}).
 -record(cacheChange,
-        {kind, writerGuid, instanceHandle, sequenceNumber, inlineQoS = [], data}).
+        {kind,
+        writerGuid,
+        instanceHandle,
+        sequenceNumber,
+        inlineQoS = [],
+        data = <<>> :: binary () | #{integer() => binary()}}).
 -record(parameter, {id, length, value}).
 -record(time, {seconds, fraction}). % // franction is: sec/2^32
 -record(locator, {kind, ip, port}).
