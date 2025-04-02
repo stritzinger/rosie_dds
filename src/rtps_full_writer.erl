@@ -12,6 +12,7 @@
     matched_reader_remove/2,
     is_acked_by_all/2,
     receive_acknack/2,
+    receive_nackfrag/2,
     flush_all_changes/1
 ]).
 
@@ -83,6 +84,10 @@ receive_acknack(Name, Acknack) ->
     [Pid | _] = pg:get_members(Name),
     gen_server:cast(Pid, {receive_acknack, Acknack}).
 
+receive_nackfrag(Name, NackFrag) ->
+    [Pid | _] = pg:get_members(Name),
+    gen_server:cast(Pid, {receive_nackfrag, NackFrag}).
+
 get_cache(Name) ->
     [Pid | _] = pg:get_members(Name),
     gen_server:call(Pid, get_cache).
@@ -128,7 +133,9 @@ handle_cast({matched_reader_add, Proxy}, State) ->
 handle_cast({matched_reader_remove, Guid}, State) ->
     {noreply, h_matched_reader_remove(Guid, State)};
 handle_cast({receive_acknack, Acknack}, State) ->
-    {noreply, h_receive_acknack(Acknack, State)}.
+    {noreply, h_receive_acknack(Acknack, State)};
+handle_cast({receive_nackfrag, NackFrag}, State) ->
+    {noreply, h_receive_nackfrag(NackFrag, State)}.
 
 handle_info(heartbeat_loop, State) ->
     {noreply, heartbeat_loop(State)};
@@ -282,11 +289,11 @@ build_datafrag_submessage(CC, Change4R, RID) ->
     % For simplicity we assume Fragment size is already filling the MTU
     % and we don't need to send more than one fragment
     Range = calc_fragment_range(FragmentStates),
-    io:format("Range: ~p~n", [Range]),
+    io:format("Sending Range: ~p~n", [Range]),
     SubMsg = rtps_messages:serialize_data_frag(RID, CC, Range,
                                                SampleSize, FragmentSize),
     % mark all sent fragments as "sent"
-    {Start, End} = Range,
+    % {Start, End} = Range,
     % SentFragments = lists:seq(Start, End),
     % NewFragmentStates = maps:map(fun(N, Status) ->
     %         case lists:member(N, SentFragments) of
@@ -473,11 +480,44 @@ update_for_acknack(RGUID, Missed, FinalFlag, #state{reader_proxies = RP} = S) ->
                                   changes_for_reader = NewChangeMap},
     S#state{reader_proxies = maps:put(RGUID, NewProxy, RP)}.
 
+update_for_nack_frag(RGUID, SN, Missing, #state{reader_proxies = RP} = S) ->
+    #reader_proxy{changes_for_reader = Changes} = Proxy = maps:get(RGUID, RP),
+    #change_for_reader{
+        is_fragmented = IsFragmented,
+        fragments_state = FragmentStates} = C = maps:get(SN, Changes),
+    SmallerMissing = lists:min(Missing),
+    NewChange = case IsFragmented of
+        true ->
+            NewFragmentStates = maps:map(fun(N, Status) ->
+                    case lists:member(N, Missing) of
+                        true -> nacked;
+                        false -> case N < SmallerMissing of
+                            true -> received;
+                            false -> Status
+                        end
+                    end
+                end, FragmentStates),
+            C#change_for_reader{fragments_state = NewFragmentStates};
+        false ->
+            C
+    end,
+    NewChangeMap = Changes#{SN => NewChange},
+    NewProxy = Proxy#reader_proxy{changes_for_reader = NewChangeMap},
+    S#state{reader_proxies = maps:put(RGUID, NewProxy, RP)}.
+
 h_receive_acknack(#acknack{readerGUID = RGUID, final_flag = FF, sn_range = SNRange},
                   #state{reader_proxies = RP} = S) ->
     Range = case is_integer(SNRange) of true -> [SNRange]; false -> SNRange end,
     case maps:is_key(RGUID, RP) of
         true -> update_for_acknack(RGUID, Range, FF, S);
+        false -> S
+    end.
+
+h_receive_nackfrag(#nackfrag{readerGUID = RGUID, sn = SN, missing_fragments = Missing},
+                   #state{reader_proxies = RP} = S) ->
+    io:format("Received nackfrag, ~p missing fragments ~n", [length(Missing)]),
+    case maps:is_key(RGUID, RP) of
+        true -> update_for_nack_frag(RGUID, SN, Missing, S);
         false -> S
     end.
 

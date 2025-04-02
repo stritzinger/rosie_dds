@@ -138,7 +138,9 @@ sub_msg_parsing_loop(State, PayLoad) ->
         {heartbeat_frag, H} ->
             send_heartbit_frag_to_reader(State, H);
         {acknack, A} ->
-            send_acknack_to_writer(State, A)
+            send_acknack_to_writer(State, A);
+        {nackfrag, A} ->
+            send_nackfrag_to_writer(State, A)
     end,
     % other messages
     sub_msg_parsing_loop(NewState, NextSubMsg).
@@ -173,6 +175,9 @@ send_gap_to_reader(State, #gap{readerGUID = R_GUID} = GAP) ->
 
 send_acknack_to_writer(_State, #acknack{writerGUID = W} = A) ->
     rtps_full_writer:receive_acknack(W, A).
+
+send_nackfrag_to_writer(_State, #nackfrag{writerGUID = W} = A) ->
+    rtps_full_writer:receive_nackfrag(W, A).
 
 send_heartbit_to_reader(_State,
                         #heartbeat{readerGUID = #guId{prefix = _Prefix, entityId = RID}} = H)
@@ -252,6 +257,8 @@ process_entity_sub_msg(?SUB_MSG_KIND_DATA_FRAG, {Flags, Body}, _) ->
     handle_data_frag(rtps_messages:parse_data_frag(Flags, Body));
 process_entity_sub_msg(?SUB_MSG_KIND_ACKNACK, {Flags, Body}, S) ->
     handle_acknack(S, rtps_messages:parse_acknack(Flags, Body));
+process_entity_sub_msg(?SUB_MSG_KIND_NACK_FRAG, {Flags, Body}, S) ->
+    handle_nackfrag(S, rtps_messages:parse_nackfrag(Flags, Body));
 process_entity_sub_msg(?SUB_MSG_KIND_HEARTBEAT, {Flags, Body}, S) ->
     handle_heartbeat(S, rtps_messages:parse_heartbeat(Flags, Body));
 process_entity_sub_msg(?SUB_MSG_KIND_HEARTBEAT_FRAG, {Flags, Body}, S) ->
@@ -313,6 +320,13 @@ handle_acknack(#state{sourceGuidPrefix = SRC, destGuidPrefix = DST},
     {acknack,
      A#acknack{writerGUID = #guId{prefix = DST, entityId = WID},
                readerGUID = #guId{prefix = SRC, entityId = RID}}}.
+
+handle_nackfrag(#state{sourceGuidPrefix = SRC, destGuidPrefix = DST},
+                #nackfrag{writerGUID = #guId{entityId = WID},
+                          readerGUID = #guId{entityId = RID}} = N) ->
+    {nackfrag,
+     N#nackfrag{writerGUID = #guId{prefix = DST, entityId = WID},
+                readerGUID = #guId{prefix = SRC, entityId = RID}}}.
 
 handle_heartbeat(#state{sourceGuidPrefix = SRC, destGuidPrefix = DST},
                  #heartbeat{writerGUID = #guId{entityId = WID},
