@@ -215,11 +215,12 @@ send_selected_changes(RequestedSN,
 
 build_rtps_message(Guid, HC, ValidToSend, ChangesForReader, ReaderEntityID) ->
     MTU = rtps_network_utils:get_mtu(),
+    UDP_MTU = MTU - 20 - 8, % 20 for IP and 8 for UDP header
     RTPSHeader = rtps_messages:header(Guid#guId.prefix),
     InfoTimestamp = rtps_messages:serialize_info_timestamp(),
     BaseMessage = <<RTPSHeader/binary, InfoTimestamp/binary>>,
     lists:foldl(fun(C, Acc) ->
-                    build_submessage(Guid, HC, C, Acc, MTU, ReaderEntityID)
+                    build_submessage(Guid, HC, C, Acc, UDP_MTU, ReaderEntityID)
                 end,
                 {BaseMessage, ChangesForReader},
                 ValidToSend).
@@ -286,24 +287,24 @@ build_datafrag_submessage(CC, Change4R, RID) ->
                                                SampleSize, FragmentSize),
     % mark all sent fragments as "sent"
     {Start, End} = Range,
-    SentFragments = lists:seq(Start, End),
-    NewFragmentStates = maps:map(fun(N, Status) ->
-            case lists:member(N, SentFragments) of
-                true -> sent;
-                false -> Status
-            end
-        end,
-        FragmentStates),
-    NewC4R = Change4R#change_for_reader{status = unacknowledged,
-                                        fragments_state = NewFragmentStates},
+    % SentFragments = lists:seq(Start, End),
+    % NewFragmentStates = maps:map(fun(N, Status) ->
+    %         case lists:member(N, SentFragments) of
+    %             true -> sent;
+    %             false -> Status
+    %         end
+    %     end,
+    %     FragmentStates),
+    NewC4R = Change4R#change_for_reader{status = unacknowledged},
     {SubMsg, NewC4R}.
 
 calc_fragment_range(FragmentStates) ->
     % For simplicity we assume Fragment size is already filling the MTU
     % and we don't need to send more than one fragment,
     % TODO:
-    % We should check the available space and extrend the range if there is space
-    StartingFragmentNumber = lists:min([SN || {SN, Status} <- maps:to_list(FragmentStates), Status /= sent]),
+    % We should check the available space and extend the range if there is space
+    % but then we shoud jump sections of fragments that are already sent
+    StartingFragmentNumber = lists:min([SN || {SN, Status} <- maps:to_list(FragmentStates), Status /= received]),
     FragmentsInSubmessage = 1,
     {StartingFragmentNumber, StartingFragmentNumber + FragmentsInSubmessage - 1}.
 
