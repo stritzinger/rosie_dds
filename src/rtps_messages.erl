@@ -14,6 +14,7 @@
     parse_heartbeat/2,
     parse_heartbeat_frag/2,
     parse_acknack/2,
+    parse_nackfrag/2,
     parse_gap/2,
     parse_param_list/1,
     add_rappresentation_id/1,
@@ -796,6 +797,25 @@ parse_heartbeat_frag(<<_:7, ?LITTLE_ENDIAN:1>>,
         sequence_number = SN,
         last_fragment_number = LastFragSN,
         count = C}.
+
+parse_nackfrag(<<_:7, ?LITTLE_ENDIAN:1>>,
+               <<Reader_key:3/binary,
+                 Reader_kind:8,
+                 Writer_key:3/binary,
+                 Writer_kind:8,
+                 0:32/little,
+                 SN:32/little,
+                 BitMapBase:32/little,
+                 NumBits:32/little,
+                 BitMap_and_count/binary>>) when NumBits =< 256 ->
+    <<Set:NumBits/big, Count:32/little>> = BitMap_and_count,
+    #nackfrag{
+        writerGUID = #guId{entityId = #entityId{key = Writer_key, kind = Writer_kind}},
+        readerGUID = #guId{entityId = #entityId{key = Reader_key, kind = Reader_kind}},
+        sn = SN,
+        missing_fragments = filter_by_bits(BitMapBase, Set, NumBits,
+                                          lists:seq(BitMapBase, BitMapBase + NumBits)),
+        count = Count}.
 
 -ifdef(TEST).
 
