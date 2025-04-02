@@ -10,6 +10,7 @@
     set_listener/2,
     add_change/2,
     add_fragments/3,
+    fragmented_change/3,
     remove_change/2,
     get_change/2,
     get_all_changes/1,
@@ -49,6 +50,10 @@ add_change(Name, Change) ->
 add_fragments(Name, ChangeKey, Fragments) ->
     [Pid | _] = pg:get_members(Name),
     gen_server:call(Pid, {add_fragments, ChangeKey, Fragments}).
+
+fragmented_change(Name, ChangeKey, Fragments) ->
+    [Pid | _] = pg:get_members(Name),
+    gen_server:call(Pid, {fragmented_change, ChangeKey, Fragments}).
 
 remove_change(Name, {WriterGuid, SequenceNumber}) ->
     [Pid | _] = pg:get_members(Name),
@@ -90,6 +95,8 @@ handle_call({add_change, Change}, _, #state{listener = {Module, ID}} = S) ->
     {reply, ok, h_add_change(S, Change)};
 handle_call({add_fragments, ChangeKey, Fragments}, _, S) ->
     {reply, ok, h_add_fragments(ChangeKey, Fragments, S)};
+handle_call({fragmented_change, ChangeKey, Fragments}, _, S) ->
+    {reply, ok, h_fragmented_change(ChangeKey, Fragments, S)};
 handle_call({remove_change, WriterGuid, SequenceNumber}, _, State) ->
     {reply, ok, h_remove_change(State, WriterGuid, SequenceNumber)};
 handle_call(get_all_changes, _, State) ->
@@ -167,6 +174,11 @@ h_get_max_seq_num(#state{cache = C}) ->
         _ ->
             lists:max([SN || {_, SN} <- maps:keys(C)])
     end.
+
+h_fragmented_change(ChangeKey, Fragments, #state{cache = C} = S) ->
+    Change = maps:get(ChangeKey, C),
+    NewChange = Change#cacheChange{data = Fragments},
+    S#state{cache = C#{ChangeKey => NewChange}}.
 
 -ifdef(TEST).
 

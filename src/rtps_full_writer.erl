@@ -18,6 +18,7 @@
 -behaviour(gen_server).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
+-include_lib("kernel/include/logger.hrl").
 -include("../include/rtps_structure.hrl").
 -include("../include/rtps_constants.hrl").
 
@@ -26,6 +27,7 @@
 -define(DEFAULT_NACK_RESPONCE_DELAY, 200).
 
 -define(DATA_SUBMSG_OVERHEAD, 28).
+-define(DATAFRAG_SUBMSG_OVERHEAD, 36).
 
 -record(state,
         {participant = #participant{},
@@ -195,9 +197,7 @@ send_selected_changes(RequestedSN,
     ToSend = [{SN, rtps_history_cache:get_change(HC, {Guid, SN})} || SN <- RequestedSN],
     ValidToSend = [{SN,C} || {SN,C} <- ToSend, C /= not_found],
 
-
-
-    {RTPSMessage, NewC4R} = build_rtps_message(Guid, ValidToSend, C4R, RID),
+    {RTPSMessage, NewC4R} = build_rtps_message(Guid, HC, ValidToSend, C4R, RID),
     [G | _] = pg:get_members(rtps_gateway),
     rtps_gateway:send(G, {RTPSMessage, {L#locator.ip, L#locator.port}}),
     NewC4R.
@@ -213,29 +213,99 @@ send_selected_changes(RequestedSN,
     %         CR).
     %
 
-build_rtps_message(Guid, ValidToSend, ChangesFroReader, ReaderEntityID) ->
+build_rtps_message(Guid, HC, ValidToSend, ChangesForReader, ReaderEntityID) ->
     MTU = rtps_network_utils:get_mtu(),
     RTPSHeader = rtps_messages:header(Guid#guId.prefix),
     InfoTimestamp = rtps_messages:serialize_info_timestamp(),
     BaseMessage = <<RTPSHeader/binary, InfoTimestamp/binary>>,
     lists:foldl(fun(C, Acc) ->
-                    build_submessage(C, Acc, MTU, ReaderEntityID)
+                    build_submessage(Guid, HC, C, Acc, MTU, ReaderEntityID)
                 end,
-                {BaseMessage, ChangesFroReader},
+                {BaseMessage, ChangesForReader},
                 ValidToSend).
-build_submessage({SN, #cacheChange{data = Data} = CC}, {BinAcc, C4R}, MTU, RID)
+
+build_submessage(_, _,{SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap}, MTU, RID)
     when is_record(Data, sedp_disc_endpoint_data)
         orelse
         (is_binary(Data) andalso (size(BinAcc) + size(Data) + ?DATA_SUBMSG_OVERHEAD) =< MTU)
 ->
     % We can normally serialize the DATA_SUBMESSAGE
-    Change4R = maps:get(SN, C4R),
+    Change4R = maps:get(SN, C4RMap),
     SubMsg = rtps_messages:serialize_data(RID, CC),
     NewBin = <<BinAcc/binary, SubMsg/binary>>,
     % mark all sent requests as "unacknowledged"
     % (skipping the "UNDERWAY" status) just for simplicity
-    NewC4R = maps:put(SN, Change4R#change_for_reader{status = unacknowledged}, C4R),
-    {NewBin, NewC4R}.
+    NewC4R = maps:put(SN, Change4R#change_for_reader{status = unacknowledged}, C4RMap),
+    {NewBin, NewC4R};
+build_submessage(Guid, HC, {SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap}, MTU, RID)
+    when is_binary(Data) andalso (size(BinAcc) + size(Data) + ?DATA_SUBMSG_OVERHEAD) > MTU
+->
+    % We have a binary which is too big to send with the current MTU,
+    % we need to split it into a map
+    io:format("Data needs to be fragmented~n"),
+    Change4R = maps:get(SN, C4RMap),
+    FragSize = MTU - size(BinAcc) - ?DATAFRAG_SUBMSG_OVERHEAD,
+    {FragmentMap, FragmentedChange4R} = fragment_data(Data, FragSize, Change4R),
+    NewCC = CC#cacheChange{data = FragmentMap},
+    rtps_history_cache:fragmented_change(HC, {Guid, SN}, FragmentMap),
+    {SubMsg, NewChange4R} = build_datafrag_submessage(NewCC, FragmentedChange4R, RID),
+    NewBin = <<BinAcc/binary, SubMsg/binary>>,
+    NewC4RMap = maps:put(SN, NewChange4R, C4RMap),
+    {NewBin, NewC4RMap};
+build_submessage(_, _, {SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap}, MTU, RID)
+    when is_map(Data)
+->
+    #change_for_reader{
+        fragment_size = FragmentSize} = Change4R = maps:get(SN, C4RMap),
+    io:format("Data is fragmented, sending few frames ...~n"),
+    AvailableSpace = MTU - size(BinAcc) - ?DATAFRAG_SUBMSG_OVERHEAD,
+    case FragmentSize > AvailableSpace of
+        true ->
+            ?LOG_ERROR("No space left to send any datafrag: available space ~p, fragment size ~p~n",
+                       [AvailableSpace, FragmentSize]),
+            {BinAcc, C4RMap};
+        false ->
+            % We can send one fragment, we could send more then one, maybe,
+            % but we already maximize the fragment size to fill the MTU.
+            {SubMsg, NewChange4R} = build_datafrag_submessage(CC, Change4R, RID),
+            NewBin = <<BinAcc/binary, SubMsg/binary>>,
+            NewC4RMap = maps:put(SN, NewChange4R, C4RMap),
+            {NewBin, NewC4RMap}
+    end.
+
+build_datafrag_submessage(CC, Change4R, RID) ->
+    #change_for_reader{
+        fragments_state = FragmentStates,
+        sample_size = SampleSize,
+        fragment_size = FragmentSize} = Change4R,
+    % For simplicity we assume Fragment size is already filling the MTU
+    % and we don't need to send more than one fragment
+    Range = calc_fragment_range(FragmentStates),
+    io:format("Range: ~p~n", [Range]),
+    SubMsg = rtps_messages:serialize_data_frag(RID, CC, Range,
+                                               SampleSize, FragmentSize),
+    % mark all sent fragments as "sent"
+    {Start, End} = Range,
+    SentFragments = lists:seq(Start, End),
+    NewFragmentStates = maps:map(fun(N, Status) ->
+            case lists:member(N, SentFragments) of
+                true -> sent;
+                false -> Status
+            end
+        end,
+        FragmentStates),
+    NewC4R = Change4R#change_for_reader{status = unacknowledged,
+                                        fragments_state = NewFragmentStates},
+    {SubMsg, NewC4R}.
+
+calc_fragment_range(FragmentStates) ->
+    % For simplicity we assume Fragment size is already filling the MTU
+    % and we don't need to send more than one fragment,
+    % TODO:
+    % We should check the available space and extrend the range if there is space
+    StartingFragmentNumber = lists:min([SN || {SN, Status} <- maps:to_list(FragmentStates), Status /= sent]),
+    FragmentsInSubmessage = 1,
+    {StartingFragmentNumber, StartingFragmentNumber + FragmentsInSubmessage - 1}.
 
 send_changes(Filter, Guid, HC, RP) ->
     maps:map(fun
@@ -415,3 +485,21 @@ h_flush_all_changes(#state{entity = #endPoint{guid = #guId{prefix = Prefix}},
                        datawrite_period = _P,
                        reader_proxies = RP}) ->
 send_changes(unsent, Prefix, HC, RP).
+
+fragment_data(Data, ChunkSize, Change4R) ->
+    % The first fragment contains the representation id of the whole sample
+    DataWithEncoding = rtps_messages:add_rappresentation_id(Data),
+    <<FirstChunk:ChunkSize/binary, Rest/binary>> = DataWithEncoding,
+    FragmentsList = rec_fragment_data(Rest, ChunkSize, 2, [{1, FirstChunk}]),
+    FragmentStates = maps:from_list([{SN, unsent} || {SN, _} <- FragmentsList]),
+    NewChange4R = Change4R#change_for_reader{is_fragmented = true,
+                                             sample_size = size(DataWithEncoding),
+                                             fragment_size = ChunkSize,
+                                             fragments_state = FragmentStates},
+    {maps:from_list(FragmentsList), NewChange4R}.
+
+rec_fragment_data(Data, ChunkSize, Number, Chunks) when size(Data) < ChunkSize ->
+    [{Number, Data} | Chunks];
+rec_fragment_data(Data, ChunkSize, Number, Chunks) ->
+    <<Chunk:ChunkSize/binary, Rest/binary>> = Data,
+    rec_fragment_data(Rest, ChunkSize, Number + 1, [{Number, Chunk} | Chunks]).

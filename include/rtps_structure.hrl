@@ -29,7 +29,9 @@
         is_relevant = true,
         % optional, used if data sample is fragmented
         is_fragmented = false,
-        fragments_state = #{} :: #{integer() => unsent |requested | sent}
+        sample_size :: undefined | integer(),
+        fragment_size :: undefined | integer(),
+        fragments_state :: undefined | #{integer() => unsent |requested | sent}
 }).
 
 -record(change_from_writer, {
