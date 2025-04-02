@@ -16,12 +16,15 @@
     parse_acknack/2,
     parse_gap/2,
     parse_param_list/1,
+    add_rappresentation_id/1,
     serialize_data/2,
+    serialize_data_frag/5,
     serialize_heatbeat/1,
     serialize_acknack/1,
     serialize_nackfrag/1
 ]).
 
+-include_lib("stdlib/include/assert.hrl").
 -include("../include/rtps_structure.hrl").
 -include("../include/rtps_constants.hrl").
 
@@ -292,6 +295,9 @@ spdp_data_to_param_payload(#spdp_disc_part_data{domainId = D_ID,
                                         ++ [{meta_uni_locator, L} || L <- M_UNI_L]
                                         ++ [{meta_multi_locator, L} || L <- M_MULTI_L])).
 
+add_rappresentation_id(Data) ->
+    <<(?PL_CDR_LE)/binary, 0:16, Data/binary>>.
+
 serialize_data(DST_READER_ID,
                #cacheChange{writerGuid = W,
                             sequenceNumber = SN,
@@ -357,6 +363,40 @@ serialize_data(DST_READER_ID,
                                                length = byte_size(Body),
                                                flags = <<0:5, 1:1, 0:1, 1:1>>}),
     <<SubHead/binary, Body/binary>>.
+
+serialize_data_frag(DST_READER_ID,
+                    #cacheChange{data = DataFragMap,
+                                 sequenceNumber = SN,
+                                 writerGuid = W},
+                     {StartF, EndF} = Range,
+                     SampleSize,
+                     FragmentSize) ->
+    FragmentsIDs = lists:seq(StartF, EndF),
+    Fragments = list_to_binary([maps:get(F, DataFragMap) || F <- FragmentsIDs]),
+    ?assert(byte_size(Fragments) == FragmentSize * length(FragmentsIDs)),
+    Body = serialize_data_frag_sub_msg(DST_READER_ID, W#guId.entityId, SN,
+                                       Range, SampleSize, FragmentSize, Fragments),
+    SubHead =
+        serialize_sub_header(#subMessageHeader{kind = ?SUB_MSG_KIND_DATA_FRAG,
+                                               length = byte_size(Body),
+                                               flags = <<0:7, 1:1>>}),
+    <<SubHead/binary, Body/binary>>.
+
+serialize_data_frag_sub_msg(ReaderId, WriterId, WriterSN, {StartNum, EndNum},
+                            SampleSize, FragmentSize, Fragments) ->
+    <<0:16,% extra flags not used
+      28:16/little,% OctetsToInlineQos
+      (ReaderId#entityId.key):3/binary,
+      (ReaderId#entityId.kind):8,
+      (WriterId#entityId.key):3/binary,
+      (WriterId#entityId.kind):8,
+      0:32,% usually is all 0
+      WriterSN:32/little-signed-integer,
+      StartNum:32/little-unsigned-integer,
+      (EndNum - StartNum + 1):16/little-unsigned-integer,
+      FragmentSize:16/little-unsigned-integer,
+      SampleSize:32/little-unsigned-integer,
+      Fragments/binary>>.
 
 serialize_heatbeat(#heartbeat{writerGUID = #guId{entityId = WID},
                               readerGUID = #guId{entityId = RID},
