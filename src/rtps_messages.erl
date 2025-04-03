@@ -808,13 +808,15 @@ parse_nackfrag(<<_:7, ?LITTLE_ENDIAN:1>>,
                  BitMapBase:32/little,
                  NumBits:32/little,
                  BitMap_and_count/binary>>) when NumBits =< 256 ->
-    <<Set:NumBits/big, Count:32/little>> = BitMap_and_count,
+    BITMAP_LENGTH = 32 * (NumBits div 32 + 1),
+    <<NumSet:BITMAP_LENGTH/big, Count:32/little>> = BitMap_and_count,
+    Sequence = lists:seq(BitMapBase, BitMapBase + NumBits - 1),
+    Missing = filter_by_bits(BitMapBase, NumSet, BITMAP_LENGTH, Sequence),
     #nackfrag{
         writerGUID = #guId{entityId = #entityId{key = Writer_key, kind = Writer_kind}},
         readerGUID = #guId{entityId = #entityId{key = Reader_key, kind = Reader_kind}},
         sn = SN,
-        missing_fragments = filter_by_bits(BitMapBase, Set, NumBits,
-                                          lists:seq(BitMapBase, BitMapBase + NumBits)),
+        missing_fragments = Missing,
         count = Count}.
 
 -ifdef(TEST).
