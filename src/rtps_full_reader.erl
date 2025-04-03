@@ -448,17 +448,10 @@ store_fragments(Cache, WriterID, SN, ChangeFromWriter, CurrentData, DataFrag) ->
             0,
             FragsToStore),
     NewSize = SizeCounter + StoredSize,
-    % ?LOG_NOTICE(
-    % "StartNum = ~p,
-    %  SampleSize = ~p,
-    %  NewSize = ~p,
-    %  PayloadSize = ~p,
-    %  FragsInSubMsg = ~p,
-    %  FragSize = ~p",[StartNum,SampleSize,NewSize,size(Fragments), Count, FragSize]),
     ?assert(NewSize =< SampleSize),
     ChangeFromWriter#change_from_writer{
         fragmented = true,
-        expected_fragments = SampleSize div FragSize + SampleSize rem FragSize,
+        expected_fragments = SampleSize div FragSize + min(1, SampleSize rem FragSize),
         size_counter = NewSize
     }.
 
