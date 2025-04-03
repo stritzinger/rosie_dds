@@ -374,7 +374,7 @@ serialize_data_frag(DST_READER_ID,
                      FragmentSize) ->
     FragmentsIDs = lists:seq(StartF, EndF),
     Fragments = list_to_binary([maps:get(F, DataFragMap) || F <- FragmentsIDs]),
-    ?assert(byte_size(Fragments) == FragmentSize * length(FragmentsIDs)),
+    ?assert(byte_size(Fragments) =< FragmentSize * length(FragmentsIDs)),
     Body = serialize_data_frag_sub_msg(DST_READER_ID, W#guId.entityId, SN,
                                        Range, SampleSize, FragmentSize, Fragments),
     SubHead =
