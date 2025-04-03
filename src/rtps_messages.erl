@@ -297,7 +297,7 @@ spdp_data_to_param_payload(#spdp_disc_part_data{domainId = D_ID,
                                         ++ [{meta_multi_locator, L} || L <- M_MULTI_L])).
 
 add_rappresentation_id(Data) ->
-    <<(?PL_CDR_LE)/binary, 0:16, Data/binary>>.
+    <<(?CDR_LE)/binary, 0:16, Data/binary>>.
 
 serialize_data(DST_READER_ID,
                #cacheChange{writerGuid = W,
@@ -486,6 +486,7 @@ serialize_nackfrag_body(#nackfrag{writerGUID =
                                 count = Count}) ->
     BitMapBase = lists:min(Missing),
     NumBits = lists:max(Missing) - BitMapBase + 1,
+    BitMap = calc_bitmap(BitMapBase, NumBits, Missing),
     <<ReaderID:3/binary,
       ReaderKind:8,
       WriterID:3/binary,
@@ -494,7 +495,7 @@ serialize_nackfrag_body(#nackfrag{writerGUID =
       SN:32/little,
       BitMapBase:32/little,
       NumBits:32/little,
-      (calc_bitmap(BitMapBase, NumBits, Missing))/binary,
+      BitMap/binary,
       Count:32/little>>.
 
 serialize_acknack(#acknack{final_flag = FF} = A) ->
