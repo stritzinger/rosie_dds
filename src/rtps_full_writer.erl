@@ -140,7 +140,9 @@ handle_cast({receive_nackfrag, NackFrag}, State) ->
 handle_info(heartbeat_loop, State) ->
     {noreply, heartbeat_loop(State)};
 handle_info(write_loop, State) ->
-    {noreply, write_loop(State)}.
+    {noreply, write_loop(State)};
+handle_info({push_next_fragment, SN, ReaderID}, State) ->
+    {noreply, h_push_next_fragment(SN, ReaderID, State)}.
 
 %callback helpers
 
@@ -198,13 +200,13 @@ send_selected_changes([], _, _, _,#reader_proxy{changes_for_reader = CR}) -> CR;
 send_selected_changes(RequestedSN,
                       Guid,
                       HC,
-                      #guId{entityId = RID},
+                      ReaderID,
                       #reader_proxy{unicastLocatorList = [L | _],
                                     changes_for_reader = C4R}) ->
     ToSend = [{SN, rtps_history_cache:get_change(HC, {Guid, SN})} || SN <- RequestedSN],
     ValidToSend = [{SN,C} || {SN,C} <- ToSend, C /= not_found],
 
-    {RTPSMessage, NewC4R} = build_rtps_message(Guid, HC, ValidToSend, C4R, RID),
+    {RTPSMessage, NewC4R} = build_rtps_message(Guid, HC, ValidToSend, C4R, ReaderID),
     [G | _] = pg:get_members(rtps_gateway),
     rtps_gateway:send(G, {RTPSMessage, {L#locator.ip, L#locator.port}}),
     NewC4R.
@@ -220,32 +222,32 @@ send_selected_changes(RequestedSN,
     %         CR).
     %
 
-build_rtps_message(Guid, HC, ValidToSend, ChangesForReader, ReaderEntityID) ->
+build_rtps_message(Guid, HC, ValidToSend, ChangesForReader, ReaderID) ->
     MTU = rtps_network_utils:get_mtu(),
     UDP_MTU = MTU - 20 - 8, % 20 for IP and 8 for UDP header
     RTPSHeader = rtps_messages:header(Guid#guId.prefix),
     InfoTimestamp = rtps_messages:serialize_info_timestamp(),
     BaseMessage = <<RTPSHeader/binary, InfoTimestamp/binary>>,
     lists:foldl(fun(C, Acc) ->
-                    build_submessage(Guid, HC, C, Acc, UDP_MTU, ReaderEntityID)
+                    build_submessage(Guid, HC, C, Acc, UDP_MTU, ReaderID)
                 end,
                 {BaseMessage, ChangesForReader},
                 ValidToSend).
 
-build_submessage(_, _,{SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap}, MTU, RID)
+build_submessage(_, _,{SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap}, MTU, ReaderID)
     when is_record(Data, sedp_disc_endpoint_data)
         orelse
         (is_binary(Data) andalso (size(BinAcc) + size(Data) + ?DATA_SUBMSG_OVERHEAD) =< MTU)
 ->
     % We can normally serialize the DATA_SUBMESSAGE
     Change4R = maps:get(SN, C4RMap),
-    SubMsg = rtps_messages:serialize_data(RID, CC),
+    SubMsg = rtps_messages:serialize_data(ReaderID#guId.entityId, CC),
     NewBin = <<BinAcc/binary, SubMsg/binary>>,
     % mark all sent requests as "unacknowledged"
     % (skipping the "UNDERWAY" status) just for simplicity
     NewC4R = maps:put(SN, Change4R#change_for_reader{status = unacknowledged}, C4RMap),
     {NewBin, NewC4R};
-build_submessage(Guid, HC, {SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap}, MTU, RID)
+build_submessage(Guid, HC, {SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap}, MTU, ReaderID)
     when is_binary(Data) andalso (size(BinAcc) + size(Data) + ?DATA_SUBMSG_OVERHEAD) > MTU
 ->
     % We have a binary which is too big to send with the current MTU,
@@ -256,11 +258,11 @@ build_submessage(Guid, HC, {SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap
     {FragmentMap, FragmentedChange4R} = fragment_data(Data, FragSize, Change4R),
     NewCC = CC#cacheChange{data = FragmentMap},
     rtps_history_cache:fragmented_change(HC, {Guid, SN}, FragmentMap),
-    {SubMsg, NewChange4R} = build_datafrag_submessage(NewCC, FragmentedChange4R, RID),
+    {SubMsg, NewChange4R} = build_datafrag_submessage(NewCC, FragmentedChange4R, ReaderID),
     NewBin = <<BinAcc/binary, SubMsg/binary>>,
     NewC4RMap = maps:put(SN, NewChange4R, C4RMap),
     {NewBin, NewC4RMap};
-build_submessage(_, _, {SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap}, MTU, RID)
+build_submessage(_, _, {SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap}, MTU, ReaderID)
     when is_map(Data)
 ->
     #change_for_reader{
@@ -275,13 +277,13 @@ build_submessage(_, _, {SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap}, M
         false ->
             % We can send one fragment, we could send more then one, maybe,
             % but we already maximize the fragment size to fill the MTU.
-            {SubMsg, NewChange4R} = build_datafrag_submessage(CC, Change4R, RID),
+            {SubMsg, NewChange4R} = build_datafrag_submessage(CC, Change4R, ReaderID),
             NewBin = <<BinAcc/binary, SubMsg/binary>>,
             NewC4RMap = maps:put(SN, NewChange4R, C4RMap),
             {NewBin, NewC4RMap}
     end.
 
-build_datafrag_submessage(CC, Change4R, RID) ->
+build_datafrag_submessage(CC, Change4R, ReaderID) ->
     #change_for_reader{
         fragments_state = FragmentStates,
         sample_size = SampleSize,
@@ -290,18 +292,15 @@ build_datafrag_submessage(CC, Change4R, RID) ->
     % and we don't need to send more than one fragment
     Range = calc_fragment_range(FragmentStates),
     io:format("Sending Range: ~p~n", [Range]),
-    SubMsg = rtps_messages:serialize_data_frag(RID, CC, Range,
+    SubMsg = rtps_messages:serialize_data_frag(ReaderID#guId.entityId, CC, Range,
                                                SampleSize, FragmentSize),
-    % mark all sent fragments as "sent"
-    % {Start, End} = Range,
-    % SentFragments = lists:seq(Start, End),
-    % NewFragmentStates = maps:map(fun(N, Status) ->
-    %         case lists:member(N, SentFragments) of
-    %             true -> sent;
-    %             false -> Status
-    %         end
-    %     end,
-    %     FragmentStates),
+    % We push the next fragment right away without waiting for a nackfrag
+    case lists:any(fun(unknown) -> true; (_) -> false end, maps:values(FragmentStates)) of
+        true ->
+            self() ! {push_next_fragment, CC#cacheChange.sequenceNumber, ReaderID};
+        false ->
+            ok
+    end,
     NewC4R = Change4R#change_for_reader{status = unacknowledged},
     {SubMsg, NewC4R}.
 
@@ -544,3 +543,15 @@ rec_fragment_data(Data, ChunkSize, Number, Chunks) when size(Data) < ChunkSize -
 rec_fragment_data(Data, ChunkSize, Number, Chunks) ->
     <<Chunk:ChunkSize/binary, Rest/binary>> = Data,
     rec_fragment_data(Rest, ChunkSize, Number + 1, [{Number, Chunk} | Chunks]).
+
+h_push_next_fragment(SN, ReaderID, #state{entity = #endPoint{guid = Guid},
+                                          history_cache = HC,
+                                          reader_proxies = RP} = S) ->
+    ReaderProxy = maps:get(ReaderID, RP),
+    NewCR = send_selected_changes([SN],
+                      Guid,
+                      HC,
+                      ReaderID,
+                      ReaderProxy),
+    NewReaderProxy = ReaderProxy#reader_proxy{changes_for_reader = NewCR},
+    S#state{reader_proxies = maps:put(ReaderID, NewReaderProxy, RP)}.
