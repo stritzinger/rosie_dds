@@ -809,7 +809,7 @@ parse_nackfrag(<<_:7, ?LITTLE_ENDIAN:1>>,
                  BitMapBase:32/little,
                  NumBits:32/little,
                  BitMap_and_count/binary>>) when NumBits =< 256 ->
-    BITMAP_LENGTH = 32 * (NumBits div 32 + 1),
+    BITMAP_LENGTH = 32 * (NumBits div 32 + min(1, NumBits rem 32)),
     <<NumSet:BITMAP_LENGTH/big, Count:32/little>> = BitMap_and_count,
     Sequence = lists:seq(BitMapBase, BitMapBase + NumBits - 1),
     Missing = filter_by_bits(BitMapBase, NumSet, BITMAP_LENGTH, Sequence),
