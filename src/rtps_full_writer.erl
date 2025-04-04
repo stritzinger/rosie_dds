@@ -203,7 +203,6 @@ send_selected_changes(RequestedSN,
                                     changes_for_reader = C4R} = RP) ->
     ToSend = [{SN, rtps_history_cache:get_change(HC, {Guid, SN})} || SN <- RequestedSN],
     ValidToSend = [{SN,C} || {SN,C} <- ToSend, C /= not_found],
-
     {RTPSMessage, NewC4R, Action} = build_rtps_message(Guid, HC, ValidToSend, C4R, ReaderID),
     [G | _] = pg:get_members(rtps_gateway),
     rtps_gateway:send(G, {RTPSMessage, {L#locator.ip, L#locator.port}}),
@@ -263,7 +262,7 @@ build_submessage(_, _, {SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap, _}
         true ->
             ?LOG_ERROR("No space left to send any datafrag: available space ~p, fragment size ~p~n",
                        [AvailableSpace, FragmentSize]),
-            {BinAcc, C4RMap, no_action};
+            {BinAcc, C4RMap, {send_more_fragments, SN}};
         false ->
             % We can send one fragment, we could send more then one, maybe,
             % but we already maximize the fragment size to fill the MTU.
@@ -288,8 +287,15 @@ build_datafrag_submessage(CC, Change4R, ReaderID) ->
     % For simplicity we assume Fragment size is already filling the MTU
     % and we don't need to send more than one fragment
     {From, To} = Range = calc_fragment_range(FragmentStates),
-    SubMsg = rtps_messages:serialize_data_frag(ReaderID#guId.entityId, CC, Range,
-                                               SampleSize, FragmentSize),
+    SubMsg = case Range of
+        {0,0} ->
+            % The range might be 0-0 it means we sent everything,
+            % we can skip it and wait for a nackfrag
+            <<>>;
+        _ ->
+            rtps_messages:serialize_data_frag(ReaderID#guId.entityId, CC, Range,
+                                               SampleSize, FragmentSize)
+    end,
     NewStates = maps:map(fun(SN, Status) ->
             case  From =< SN andalso SN =< To of
                 true -> sent;
@@ -309,9 +315,13 @@ calc_fragment_range(FragmentStates) ->
     % but then we shoud jump sections of fragments that are already sent
     FragmentToBeSent = [SN || {SN, Status} <- maps:to_list(FragmentStates),
                          Status /= received andalso Status /= sent],
-    StartingFragmentNumber = lists:min(FragmentToBeSent),
-    FragmentsInSubmessage = 1,
-    {StartingFragmentNumber, StartingFragmentNumber + FragmentsInSubmessage - 1}.
+    case FragmentToBeSent of
+        [] -> {0,0};
+        _ ->
+            StartingFragmentNumber = lists:min(FragmentToBeSent),
+            FragmentsInSubmessage = 1,
+            {StartingFragmentNumber, StartingFragmentNumber + FragmentsInSubmessage - 1}
+    end.
 
 send_changes(Filter, Guid, HC, RP) ->
     maps:map(fun
@@ -395,8 +405,21 @@ h_matched_reader_remove(Guid, #state{reader_proxies = RP} = S) ->
 
 setup_reader_proxy(Changes, Proxy) ->
     ChangesForReaders = lists:foldl(
-        fun(#cacheChange{sequenceNumber = SN}, Acc) ->
-            maps:put(SN, #change_for_reader{status = unacknowledged}, Acc)
+        fun
+            (#cacheChange{sequenceNumber = SN, data = Data}, Acc) when is_map(Data) ->
+                FirstChunkSize = size(maps:get(1, Data)),
+                SampleSize = lists:foldl(fun(B, Size) -> Size + size(B) end, 0, maps:values(Data)),
+                FragmentStates = #{ K => unknown || K <- maps:keys(Data)},
+                maps:put(SN, #change_for_reader{
+                        status = unacknowledged,
+                        is_fragmented = true,
+                        sample_size = SampleSize,
+                        fragment_size = FirstChunkSize,
+                        fragments_state = FragmentStates
+                    },
+                    Acc);
+            (#cacheChange{sequenceNumber = SN}, Acc) ->
+                maps:put(SN, #change_for_reader{status = unacknowledged}, Acc)
         end,
         #{},
         Changes),
@@ -513,7 +536,6 @@ h_receive_acknack(#acknack{readerGUID = RGUID, final_flag = FF, sn_range = SNRan
 
 h_receive_nackfrag(#nackfrag{readerGUID = RGUID, sn = SN, missing_fragments = Missing},
                    #state{reader_proxies = RP} = S) ->
-    io:format("Received nackfrag, ~p missing fragments ~n", [length(Missing)]),
     case maps:is_key(RGUID, RP) of
         true -> update_for_nack_frag(RGUID, SN, Missing, S);
         false -> S
