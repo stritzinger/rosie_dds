@@ -31,7 +31,7 @@
         is_fragmented = false,
         sample_size :: undefined | integer(),
         fragment_size :: undefined | integer(),
-        fragments_state :: undefined | #{integer() =>  unknown | received | nacked}
+        fragments_state :: undefined | #{integer() =>  unknown | sent | received | nacked}
 }).
 
 -record(change_from_writer, {
