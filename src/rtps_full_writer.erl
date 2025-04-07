@@ -574,7 +574,7 @@ dispatch_rtps_message(Guid, RTPSMessage, IP, Port) ->
             [G | _] = pg:get_members(rtps_gateway),
             rtps_gateway:send(G, {RTPSMessage, {IP, Port}});
         {Module, Fun} ->
-            Module:Fun(RTPSMessage, Options);
+            Module:Fun({RTPSMessage, Options});
         F when is_function(F) ->
-            F(RTPSMessage, Options)
+            F({RTPSMessage, Options})
     end.
