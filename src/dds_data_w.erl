@@ -2,6 +2,7 @@
 
 -export([
     start_link/1,
+    get_topic/1,
     write/2,
     get_matched_subscriptions/1,
     remote_reader_add/2,
@@ -23,6 +24,10 @@
 
 start_link(Setup) ->
     gen_server:start_link(?MODULE, Setup, []).
+
+get_topic(Name) ->
+    [Pid | _] = pg:get_members(Name),
+    gen_server:call(Pid, ?FUNCTION_NAME).
 
 get_matched_subscriptions(Name) ->
     [Pid | _] = pg:get_members(Name),
@@ -66,7 +71,8 @@ init({Topic, #participant{guid = _ID}, GUID}) ->
      #state{topic = Topic,
             rtps_writer = GUID,
             history_cache = {cache_of, GUID}}}.
-
+handle_call(get_topic, _, #state{topic = T} = S) ->
+    {reply, T, S};
 handle_call(get_matched_subscriptions, _, #state{rtps_writer = W} = S) ->
     Matched = maps:filter(fun(_, #reader_proxy{ready=Ready}) -> Ready end,
                           rtps_full_writer:get_matched_readers(W)),
