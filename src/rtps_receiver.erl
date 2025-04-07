@@ -11,6 +11,7 @@
     get_local_locators/1,
     open_unicast_locators/2,
     open_multicast_locators/2,
+    receive_packet/2,
     stop/1
 ]).
 
@@ -47,6 +48,10 @@ open_multicast_locators(Name, LocatorList) ->
     [Pid | _] = pg:get_members(Name),
     gen_server:cast(Pid, {open_multicast_locators, LocatorList}).
 
+receive_packet(Name, Packet) ->
+    [Pid | _] = pg:get_members(Name),
+    gen_server:cast(Pid, {receive_packet, Packet}).
+
 stop(Name) ->
     [Pid | _] = pg:get_members(Name),
     gen_server:call(Pid, stop).
@@ -71,7 +76,15 @@ handle_call(_, _, S) ->
 handle_cast({open_unicast_locators, List}, State) ->
     {noreply, open_udp_locators(unicast, List, State)};
 handle_cast({open_multicast_locators, List}, State) ->
-    {noreply, open_udp_locators(multicast, List, State)}.
+    {noreply, open_udp_locators(multicast, List, State)};
+handle_cast({receive_packet, Packet}, State) ->
+    case rtps_messages:is_rtps_packet(Packet) of
+        true ->
+            analize(State#state.destGuidPrefix, Packet, {unknown, unknown});
+        false ->
+            io:format("[RTPS_RECEIVER]: Bad packet\n")
+    end,
+    {noreply, State}.
 
 handle_info({udp, _Socket, Ip, Port, Packet}, #state{openedSockets = OS} = S) ->
     IsSocketValid = lists:any(fun({_,_,_,_}) -> true; (_) -> false end, OS),
