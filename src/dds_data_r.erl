@@ -5,6 +5,7 @@
 
 -export([
     start_link/1,
+    get_topic/1,
     read/2,
     get_matched_publications/1,
     read_all/1,
@@ -28,6 +29,10 @@
 
 start_link(Setup) ->
     gen_server:start_link(?MODULE, Setup, []).
+
+get_topic(Name) ->
+    [Pid | _] = pg:get_members(Name),
+    gen_server:call(Pid, get_topic).
 
 get_matched_publications(Name) ->
     [Pid | _] = pg:get_members(Name),
@@ -78,6 +83,8 @@ init({Topic, #participant{guid = _ID}, GUID}) ->
             rtps_reader = GUID,
             history_cache = {cache_of, GUID}}}.
 
+handle_call(get_topic, _, #state{topic = T} = S) ->
+    {reply, T, S};
 handle_call(get_matched_publications, _, #state{matched_data_writers = Matched} = S) ->
     {reply, Matched, S};
 handle_call({read, ChangeKey}, _, #state{history_cache = C} = S) ->
