@@ -204,7 +204,8 @@ send_selected_changes(RequestedSN,
     ToSend = [{SN, rtps_history_cache:get_change(HC, {Guid, SN})} || SN <- RequestedSN],
     ValidToSend = [{SN,C} || {SN,C} <- ToSend, C /= not_found],
     {RTPSMessage, NewC4R, Action} = build_rtps_message(Guid, HC, ValidToSend, C4R, ReaderID),
-    dispatch_rtps_message(Guid, RTPSMessage, L#locator.ip, L#locator.port),
+    [G | _] = pg:get_members(rtps_gateway),
+    rtps_gateway:send(G, Guid, RTPSMessage, L#locator.ip, L#locator.port),
     case Action of
         no_action ->
             NewC4R;
@@ -563,18 +564,3 @@ rec_fragment_data(Data, ChunkSize, Number, Chunks) when size(Data) < ChunkSize -
 rec_fragment_data(Data, ChunkSize, Number, Chunks) ->
     <<Chunk:ChunkSize/binary, Rest/binary>> = Data,
     rec_fragment_data(Rest, ChunkSize, Number + 1, [{Number, Chunk} | Chunks]).
-
-dispatch_rtps_message(Guid, RTPSMessage, IP, Port) ->
-    Options = #{
-        sender => Guid,
-        dst => {IP, Port}
-    },
-    case application:get_env(rosie_dds, gateway_fun) of
-        undefined ->
-            [G | _] = pg:get_members(rtps_gateway),
-            rtps_gateway:send(G, {RTPSMessage, {IP, Port}});
-        {Module, Fun} ->
-            Module:Fun({RTPSMessage, Options});
-        F when is_function(F) ->
-            F({RTPSMessage, Options})
-    end.
