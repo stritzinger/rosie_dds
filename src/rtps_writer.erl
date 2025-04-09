@@ -108,7 +108,7 @@ send_locators_changes(#state{reader_locators = RLs} = S) ->
 
 send_locators_changes(S, [], New_RL) ->
     S#state{reader_locators = New_RL};
-send_locators_changes(#state{participant = P, entity = _E} = S,
+send_locators_changes(#state{participant = P, entity = #endPoint{guid = GUID}} = S,
                       [#reader_locator{locator = L, unsent_changes = Changes} = RL | TL],
                       New_RL) ->
     % prepare ordered datasubmsg in binary and send them
@@ -118,8 +118,7 @@ send_locators_changes(#state{participant = P, entity = _E} = S,
         [rtps_messages:serialize_info_timestamp()]
         ++ [rtps_messages:serialize_data(?ENTITYID_UNKNOWN, C) || C <- Changes],
     Datagram = rtps_messages:build_message(P#participant.guid#guId.prefix, SUB_MSG_LIST),
-    [G | _] = pg:get_members(rtps_gateway),
-    rtps_gateway:send(G, {Datagram, {L#locator.ip, L#locator.port}}),
+    dispatch_rtps_message(GUID, Datagram, L#locator.ip, L#locator.port),
     send_locators_changes(S, TL, [RL#reader_locator{unsent_changes = []} | New_RL]).
 
 -define(WRITING_FREQ, 1000).
@@ -209,3 +208,18 @@ rm_change_from_locators(Key, [RL | TL], NewLocators) ->
 
 h_on_change_removed(Key, #state{history_cache = _C, reader_locators = L} = S) ->
     S#state{reader_locators = rm_change_from_locators(Key, L)}.
+
+dispatch_rtps_message(Guid, RTPSMessage, IP, Port) ->
+    Options = #{
+        sender => Guid,
+        dst => {IP, Port}
+    },
+    case application:get_env(rosie_dds, gateway_fun) of
+        undefined ->
+            [G | _] = pg:get_members(rtps_gateway),
+            rtps_gateway:send(G, {RTPSMessage, {IP, Port}});
+        {Module, Fun} ->
+            Module:Fun({RTPSMessage, Options});
+        F when is_function(F) ->
+            F({RTPSMessage, Options})
+    end.
