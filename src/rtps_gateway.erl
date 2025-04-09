@@ -53,8 +53,8 @@ dispatch_rtps_message(Guid, Datagram, IP, Port, #state{socket = S}) ->
     case application:get_env(rosie_dds, gateway_fun) of
         undefined ->
             gen_udp:send(S, {IP, Port}, Datagram);
-        {Module, Fun} ->
+        {ok, {Module, Fun}} ->
             Module:Fun({Datagram, Options});
-        F when is_function(F) ->
+        {ok, F} when is_function(F) ->
             F({Datagram, Options})
     end.
