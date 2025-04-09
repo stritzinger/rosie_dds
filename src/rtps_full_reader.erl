@@ -305,7 +305,7 @@ send_acknack(WGUID,
                                     [rtps_messages:serialize_info_dst(WGUID#guId.prefix),
                                      rtps_messages:serialize_acknack(ACKNACK)]),
     [G | _] = pg:get_members(rtps_gateway),
-    rtps_gateway:send(G, {Datagram, {FirstL#locator.ip, FirstL#locator.port}}),
+    rtps_gateway:send(G, RGUID ,Datagram, FirstL#locator.ip, FirstL#locator.port),
     S#state{acknack_count = C + 1}.
 
 send_nackfrag(WGUID, {SN, Change}, #state{entity = #endPoint{guid = RGUID},
@@ -354,7 +354,7 @@ send_nackfrag(WGUID, {SN, Change}, #state{entity = #endPoint{guid = RGUID},
     [G | _] = pg:get_members(rtps_gateway),
     U_List = Proxy#writer_proxy.unicastLocatorList,
     FirstL = hd(U_List),
-    rtps_gateway:send(G, {Datagram, {FirstL#locator.ip, FirstL#locator.port}}),
+    rtps_gateway:send(G, RGUID, Datagram, FirstL#locator.ip, FirstL#locator.port),
     S#state{nackfrag_count = C + 1}.
 
 h_receive_data({WriterID, SN, Data},
