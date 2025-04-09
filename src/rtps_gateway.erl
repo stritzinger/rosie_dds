@@ -2,7 +2,7 @@
 -module(rtps_gateway).
 -export([
     start_link/0,
-    send/2
+    send/5
 ]).
 
 -behaviour(gen_server).
@@ -17,8 +17,8 @@
 start_link() ->
     gen_server:start_link(?MODULE, #state{}, []).
 
-send(Pid, {Data, Dst}) ->
-    gen_server:cast(Pid, {send, {Data, Dst}}).
+send(Pid, Guid, Data, IP, Port) ->
+    gen_server:cast(Pid, {send, Guid, Data, IP, Port}).
 
 % callbacks
 init(State) ->
@@ -34,13 +34,27 @@ init(State) ->
 handle_call(_, _, State) ->
     {reply, ok, State}.
 
-handle_cast({send, {Datagram, Dst}}, #state{socket = S} = State) ->
-    case gen_udp:send(S, Dst, Datagram) of
+handle_cast({send, Guid, Datagram, IP, Port}, State) ->
+    case dispatch_rtps_message(Guid, Datagram, IP, Port, State) of
         ok -> ok;
         {error, Reason} ->
-            ?LOG_ERROR("[GATEWAY]: failed sending to: ~p\n",[Dst]),
+            ?LOG_ERROR("[GATEWAY]: failed sending to: ~p\n",[{IP, Port}]),
             ?LOG_ERROR("[GATEWAY]: reason of failure: ~p\n",[Reason])
     end,
     {noreply, State};
 handle_cast(_, State) ->
     {noreply, State}.
+
+dispatch_rtps_message(Guid, Datagram, IP, Port, #state{socket = S}) ->
+    Options = #{
+        sender => Guid,
+        dst => {IP, Port}
+    },
+    case application:get_env(rosie_dds, gateway_fun) of
+        undefined ->
+            gen_udp:send(S, {IP, Port}, Datagram);
+        {Module, Fun} ->
+            Module:Fun({Datagram, Options});
+        F when is_function(F) ->
+            F({Datagram, Options})
+    end.
