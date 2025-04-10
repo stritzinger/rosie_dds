@@ -118,8 +118,7 @@ send_locators_changes(#state{participant = P, entity = #endPoint{guid = Guid}} =
         [rtps_messages:serialize_info_timestamp()]
         ++ [rtps_messages:serialize_data(?ENTITYID_UNKNOWN, C) || C <- Changes],
     Datagram = rtps_messages:build_message(P#participant.guid#guId.prefix, SUB_MSG_LIST),
-        [G | _] = pg:get_members(rtps_gateway),
-    rtps_gateway:send(G, Guid, Datagram, L#locator.ip, L#locator.port),
+    rtps_gateway:send(Guid, Datagram, L#locator.ip, L#locator.port),
     send_locators_changes(S, TL, [RL#reader_locator{unsent_changes = []} | New_RL]).
 
 -define(WRITING_FREQ, 1000).

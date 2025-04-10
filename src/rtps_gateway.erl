@@ -2,7 +2,7 @@
 -module(rtps_gateway).
 -export([
     start_link/0,
-    send/5
+    send/4
 ]).
 
 -behaviour(gen_server).
@@ -17,7 +17,8 @@
 start_link() ->
     gen_server:start_link(?MODULE, #state{}, []).
 
-send(Pid, Guid, Data, IP, Port) ->
+send(Guid, Data, IP, Port) ->
+    [Pid | _] = pg:get_members(rtps_gateway),
     gen_server:cast(Pid, {send, Guid, Data, IP, Port}).
 
 % callbacks
