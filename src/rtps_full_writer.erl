@@ -151,7 +151,7 @@ all_changes_are_acknowledged(ReaderChanges) ->
         end,
         maps:values(ReaderChanges)).
 
-send_heartbeat_to_reader(GuidPrefix,
+send_heartbeat_to_reader(#guId{prefix = GuidPrefix} = GUID,
                           HB,
                           ReaderGUID,
                           #reader_proxy{changes_for_reader = C4R,
@@ -159,11 +159,10 @@ send_heartbeat_to_reader(GuidPrefix,
     case all_changes_are_acknowledged(C4R) of
         true -> ok;
         false ->
-            [G | _] = pg:get_members(rtps_gateway),
             NewHB = HB#heartbeat{readerGUID = ReaderGUID},
             SUB_MSG_LIST = [rtps_messages:serialize_heatbeat(NewHB)],
             Datagram = rtps_messages:build_message(GuidPrefix, SUB_MSG_LIST),
-            rtps_gateway:send(G, {Datagram, {L#locator.ip, L#locator.port}})
+            rtps_gateway:send(GUID, Datagram, L#locator.ip, L#locator.port)
     end.
 
 build_heartbeat(GUID, Cache, Count) ->
@@ -185,7 +184,7 @@ send_heartbeat(#state{entity = #endPoint{guid = GUID},
                       reader_proxies = RP}) ->
     HB = build_heartbeat(GUID, C, Count),
     maps:foreach(fun(ReaderID, Proxy) ->
-            send_heartbeat_to_reader(GUID#guId.prefix, HB, ReaderID, Proxy)
+            send_heartbeat_to_reader(GUID, HB, ReaderID, Proxy)
         end,
         RP).
 
@@ -204,8 +203,7 @@ send_selected_changes(RequestedSN,
     ToSend = [{SN, rtps_history_cache:get_change(HC, {Guid, SN})} || SN <- RequestedSN],
     ValidToSend = [{SN,C} || {SN,C} <- ToSend, C /= not_found],
     {RTPSMessage, NewC4R, Action} = build_rtps_message(Guid, HC, ValidToSend, C4R, ReaderID),
-    [G | _] = pg:get_members(rtps_gateway),
-    rtps_gateway:send(G, Guid, RTPSMessage, L#locator.ip, L#locator.port),
+    rtps_gateway:send(Guid, RTPSMessage, L#locator.ip, L#locator.port),
     case Action of
         no_action ->
             NewC4R;
