@@ -29,6 +29,10 @@
 
 -define(DATA_SUBMSG_OVERHEAD, 28).
 -define(DATAFRAG_SUBMSG_OVERHEAD, 36).
+-define(NEEDS_FRAGMENTATION(CurrentPayload, Payload, MTU),
+        (size(CurrentPayload) + size(Payload) + ?DATA_SUBMSG_OVERHEAD > MTU)).
+-define(CAN_FRAGMENT(CurrentPayload, MTU),
+        (MTU - size(CurrentPayload) - ?DATAFRAG_SUBMSG_OVERHEAD > 0)).
 
 -record(state,
         {participant = #participant{},
@@ -237,7 +241,9 @@ build_submessage(_, _,{SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap, _},
     NewC4R = maps:put(SN, Change4R#change_for_reader{status = unacknowledged}, C4RMap),
     {NewBin, NewC4R, no_action};
 build_submessage(Guid, HC, {SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap, _}, MTU, ReaderID)
-    when is_binary(Data) andalso (size(BinAcc) + size(Data) + ?DATA_SUBMSG_OVERHEAD) > MTU
+    when is_binary(Data) andalso
+         ?NEEDS_FRAGMENTATION(BinAcc, Data, MTU) andalso
+         ?CAN_FRAGMENT(BinAcc, MTU)
 ->
     % We have a binary which is too big to send with the current MTU,
     % we need to split it into a map
@@ -275,7 +281,10 @@ build_submessage(_, _, {SN, #cacheChange{data = Data} = CC}, {BinAcc, C4RMap, _}
             NewBin = <<BinAcc/binary, SubMsg/binary>>,
             NewC4RMap = maps:put(SN, NewChange4R, C4RMap),
             {NewBin, NewC4RMap, NextAction}
-    end.
+    end;
+build_submessage(_, _, {SN, _}, {BinAcc, C4RMap, Action}, _, _) ->
+    ?LOG_INFO("Writer exausted MTU space, skipping send of data message ~p", [SN]),
+    {BinAcc, C4RMap, Action}.
 
 build_datafrag_submessage(CC, Change4R, ReaderID) ->
     #change_for_reader{
@@ -385,15 +394,15 @@ h_update_matched_readers(ProxyToMatch, #state{reader_proxies = RP, history_cache
     S#state{reader_proxies = maps:merge(ProxiesToKeep, NewProxiesReady)}.
 
 h_matched_reader_add({ReaderGUID, Proxy},
-                     #state{entity = #endPoint{guid = WriterGUID},
+                     #state{entity = #endPoint{guid = GUID},
                             reader_proxies = RP,
                             history_cache = C,
                             heatbeat_count = Count} =
                          S) ->
     Changes = rtps_history_cache:get_all_changes(C),
     NewProxy = setup_reader_proxy(Changes, Proxy),
-    HB = build_heartbeat(WriterGUID, C, Count),
-    send_heartbeat_to_reader(WriterGUID#guId.prefix, HB, ReaderGUID, NewProxy),
+    HB = build_heartbeat(GUID, C, Count),
+    send_heartbeat_to_reader(GUID, HB, ReaderGUID, NewProxy),
     S#state{
         reader_proxies = RP#{ReaderGUID => NewProxy},
         heatbeat_count = Count + 1}.
