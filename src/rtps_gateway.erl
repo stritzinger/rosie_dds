@@ -18,12 +18,11 @@ start_link() ->
     gen_server:start_link(?MODULE, #state{}, []).
 
 send(Guid, Data, IP, Port) ->
-    [Pid | _] = pg:get_members(rtps_gateway),
+    [Pid | _] = pg:get_local_members(rtps_gateway),
     gen_server:cast(Pid, {send, Guid, Data, IP, Port}).
 
 % callbacks
 init(State) ->
-    %io:format("~p.erl STARTED!\n",[?MODULE]),
     pg:join(rtps_gateway, self()),
     rtps_network_utils:wait_dhcp(5000),
     LocalInterface = rtps_network_utils:get_local_ip(),
