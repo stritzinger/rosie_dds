@@ -121,7 +121,7 @@ handle_cast({on_change_available, _}, #state{spdp_reader_guid = R_GUID, spdp_wri
     CacheContent = rtps_history_cache:get_all_changes({cache_of, R_GUID}),
     LEAVING = [ {WGUID,D} || #cacheChange{writerGuid = WGUID, data = #spdp_disc_part_data{status_qos = S} = D} <- CacheContent, ?ENDPOINT_LEAVING(S)],
     {LEAVING_GUIDS , _LEAVING_DATA} = lists:unzip(LEAVING),
-    
+
     [rtps_history_cache:remove_change({cache_of, R_GUID}, {WGUID, SN})
      || #cacheChange{writerGuid = WGUID, sequenceNumber = SN} <- CacheContent,
         lists:member(WGUID, LEAVING_GUIDS)],
